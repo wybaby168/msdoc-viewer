@@ -1,0 +1,28 @@
+{
+  "name": "msdoc-html-viewer",
+  "version": "0.1.0",
+  "description": "Pure JavaScript legacy .doc (MS-DOC) reader and HTML/CSS renderer with optional Web Worker support.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./worker": "./src/worker.js"
+  },
+  "files": [
+    "src",
+    "demo",
+    "README.md"
+  ],
+  "keywords": [
+    "doc",
+    "ms-doc",
+    "ole",
+    "cfb",
+    "word",
+    "viewer",
+    "html"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "smoke": "node ./test/smoke.mjs"
+  }
+}

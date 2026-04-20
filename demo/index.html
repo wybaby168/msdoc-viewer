@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>msdoc-html-viewer demo</title>
+  <style>
+    body{margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#111}
+    .toolbar{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+    .shell{background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.06)}
+    #viewer{min-height:400px}
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <input id="file" type="file" accept=".doc">
+    <button id="use-main-thread">主线程解析</button>
+    <button id="use-worker">Worker 解析</button>
+  </div>
+  <div class="shell">
+    <div id="viewer"></div>
+  </div>
+
+  <script type="module">
+    import { createMsDocViewer, MsDocWorkerClient } from '../src/index.js';
+
+    const container = document.getElementById('viewer');
+    const fileInput = document.getElementById('file');
+    const viewer = createMsDocViewer(container);
+    let workerClient = null;
+
+    async function load(useWorker) {
+      const file = fileInput.files?.[0];
+      if (!file) {
+        alert('请先选择一个 .doc 文件');
+        return;
+      }
+      if (useWorker) {
+        workerClient ||= MsDocWorkerClient.create(new URL('../src/worker.js', import.meta.url));
+      }
+      await viewer.load(file, { workerClient: useWorker ? workerClient : null });
+    }
+
+    document.getElementById('use-main-thread').addEventListener('click', () => load(false));
+    document.getElementById('use-worker').addEventListener('click', () => load(true));
+  </script>
+</body>
+</html>
