@@ -1,11 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { parseMsDoc, renderMsDoc } from '../src/index.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const sampleCandidates = [
-  path.resolve('../work/file-viewer3/public/example/test.doc'),
-  path.resolve('../work/file-viewer3/test/test.doc'),
-  path.resolve('./test.doc'),
+  path.resolve(__dirname, './test.doc'),
+  path.resolve(__dirname, '../../work/file-viewer3/public/example/test.doc'),
+  path.resolve(__dirname, '../../work/file-viewer3/test/test.doc'),
 ].filter((file) => fs.existsSync(file));
 
 if (!sampleCandidates.length) {
@@ -16,6 +20,7 @@ const buffer = fs.readFileSync(sampleCandidates[0]);
 const parsed = parseMsDoc(buffer);
 const rendered = renderMsDoc(parsed);
 
+console.log('sample:', sampleCandidates[0]);
 console.log('counts:', parsed.meta.counts);
 console.log('warnings:', parsed.warnings.length);
 
