@@ -1,14 +1,20 @@
 {
-  "name": "msdoc-html-viewer",
-  "version": "0.1.0",
-  "description": "Pure JavaScript legacy .doc (MS-DOC) reader and HTML/CSS renderer with optional Web Worker support.",
+  "name": "msdoc-viewer",
+  "version": "0.2.0",
+  "description": "Strict TypeScript MS-DOC (.doc) reader and HTML/CSS renderer with optional Web Worker support.",
   "type": "module",
   "exports": {
-    ".": "./src/index.js",
-    "./worker": "./src/worker.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    }
   },
   "files": [
-    "src",
+    "dist",
     "demo",
     "README.md"
   ],
@@ -23,6 +29,17 @@
   ],
   "license": "MIT",
   "scripts": {
-    "smoke": "node ./test/smoke.mjs"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "npm run build && node ./test/smoke.mjs"
+  },
+  "types": "./dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wybaby168/msdoc-viewer.git"
+  },
+  "homepage": "https://github.com/wybaby168/msdoc-viewer",
+  "bugs": {
+    "url": "https://github.com/wybaby168/msdoc-viewer/issues"
   }
 }
