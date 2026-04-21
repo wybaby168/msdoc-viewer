@@ -1,6 +1,6 @@
 {
   "name": "msdoc-viewer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Strict TypeScript MS-DOC (.doc) reader and HTML/CSS renderer with optional Web Worker support.",
   "type": "module",
   "exports": {
@@ -31,7 +31,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "smoke": "npm run build && node ./test/smoke.mjs"
+    "smoke": "npm run build && node ./test/smoke.mjs",
+    "test": "npm run smoke",
+    "ci": "npm run typecheck && npm run smoke"
   },
   "types": "./dist/index.d.ts",
   "repository": {

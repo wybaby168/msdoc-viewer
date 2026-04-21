@@ -43,6 +43,9 @@ function isProbablyPicturePath(value) {
         return true;
     return /\.(?:png|apng|jpe?g|gif|bmp|dib|tiff?|emf|wmf|pict|svg)(?:$|[?#])/i.test(normalized);
 }
+function isLocalExternalPath(value) {
+    return /^file:/i.test(value) || /^(?:\\\\|[a-zA-Z]:[\\/]|\/)/.test(value);
+}
 function detectMimeFromPath(path) {
     const normalized = path.toLowerCase();
     if (normalized.includes('.png'))
@@ -69,6 +72,36 @@ function detectMimeFromPath(path) {
 }
 function isBrowserDisplayableMime(mime) {
     return /^(?:image\/png|image\/jpeg|image\/gif|image\/bmp|image\/webp|image\/svg\+xml|image\/tiff)$/i.test(mime);
+}
+function detectAttachmentMime(name) {
+    const normalized = name.toLowerCase();
+    if (normalized.endsWith('.doc'))
+        return 'application/msword';
+    if (normalized.endsWith('.docx'))
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    if (normalized.endsWith('.xls'))
+        return 'application/vnd.ms-excel';
+    if (normalized.endsWith('.xlsx'))
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    if (normalized.endsWith('.ppt'))
+        return 'application/vnd.ms-powerpoint';
+    if (normalized.endsWith('.pptx'))
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    if (normalized.endsWith('.pdf'))
+        return 'application/pdf';
+    if (normalized.endsWith('.png'))
+        return 'image/png';
+    if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg'))
+        return 'image/jpeg';
+    if (normalized.endsWith('.gif'))
+        return 'image/gif';
+    if (normalized.endsWith('.bmp'))
+        return 'image/bmp';
+    if (normalized.endsWith('.zip'))
+        return 'application/zip';
+    if (normalized.endsWith('.txt'))
+        return 'text/plain';
+    return 'application/octet-stream';
 }
 export function detectImageSegment(bytes) {
     const sigs = [
@@ -348,24 +381,30 @@ function pickBestPictureCandidate(candidates) {
     return best;
 }
 function createImageAsset(candidate, pictureOffset, picf, linkedPath) {
+    const sourceUrl = candidate.sourceUrl;
+    const localExternal = sourceUrl ? isLocalExternalPath(sourceUrl) : false;
+    const meta = {
+        pictureOffset,
+        lcb: picf.lcb,
+        cbHeader: picf.cbHeader,
+        mm: picf.mm,
+        xExt: picf.xExt,
+        yExt: picf.yExt,
+        linkedPath,
+        sourceKind: candidate.kind === 'officeArt' ? 'embedded' : candidate.kind,
+        localExternal,
+        browserRenderable: candidate.displayable,
+        ...(candidate.meta || {}),
+    };
     return {
         id: uniqueId('asset-img'),
         type: 'image',
         mime: candidate.mime,
         bytes: candidate.bytes,
-        dataUrl: candidate.sourceUrl ? '' : dataUrlFromBytes(candidate.bytes, candidate.mime),
-        sourceUrl: candidate.sourceUrl,
-        displayable: candidate.displayable,
-        meta: {
-            pictureOffset,
-            lcb: picf.lcb,
-            cbHeader: picf.cbHeader,
-            mm: picf.mm,
-            xExt: picf.xExt,
-            yExt: picf.yExt,
-            linkedPath,
-            ...(candidate.meta || {}),
-        },
+        dataUrl: sourceUrl ? '' : dataUrlFromBytes(candidate.bytes, candidate.mime),
+        sourceUrl,
+        displayable: candidate.displayable && !localExternal,
+        meta,
     };
 }
 /**
@@ -398,7 +437,7 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
     }
     if (linkedPath) {
         const mime = detectMimeFromPath(linkedPath) || 'application/octet-stream';
-        const isLocalFileReference = /^file:/i.test(linkedPath) || /^(?:\\\\|[a-zA-Z]:[\\/]|\/)/.test(linkedPath);
+        const isLocalFileReference = isLocalExternalPath(linkedPath);
         const linkedCandidate = {
             mime,
             bytes: new Uint8Array(0),
@@ -419,7 +458,7 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
             bytes: pictureChunk,
             dataUrl: dataUrlFromBytes(pictureChunk, 'application/octet-stream'),
             displayable: false,
-            meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm },
+            meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: false },
         };
     }
     const start = bodyStart + segment.start;
@@ -432,7 +471,7 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
         bytes: imageBytes,
         dataUrl: dataUrlFromBytes(imageBytes, segment.mime),
         displayable: isBrowserDisplayableMime(segment.mime),
-        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm },
+        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: isBrowserDisplayableMime(segment.mime) },
     };
 }
 function readCString(bytes, offset) {
@@ -481,14 +520,16 @@ function readObjectStorage(cfb, entry) {
         const nativeInfo = parseOle10Native(bytes);
         if (nativeInfo) {
             const name = nativeInfo.label || nativeInfo.originalPath.split(/[\\/]/).pop() || `${entry.name}.bin`;
+            const mime = detectAttachmentMime(name);
+            const attachmentMeta = { ...nativeInfo, sourceKind: 'ole10-native' };
             const attachment = {
                 id: uniqueId('asset-ole'),
                 type: 'attachment',
                 name,
-                mime: 'application/octet-stream',
+                mime,
                 bytes: nativeInfo.bytes,
-                dataUrl: dataUrlFromBytes(nativeInfo.bytes, 'application/octet-stream'),
-                meta: nativeInfo,
+                dataUrl: dataUrlFromBytes(nativeInfo.bytes, mime),
+                meta: attachmentMeta,
             };
             info.attachment = attachment;
             return info;
@@ -496,14 +537,16 @@ function readObjectStorage(cfb, entry) {
     }
     if (packageStream) {
         const bytes = cfb.getStream(packageStream) || new Uint8Array(0);
+        const name = `${slugify(entry.name)}.bin`;
+        const mime = detectAttachmentMime(name);
         const attachment = {
             id: uniqueId('asset-pkg'),
             type: 'attachment',
-            name: `${slugify(entry.name)}.bin`,
-            mime: 'application/octet-stream',
+            name,
+            mime,
             bytes,
-            dataUrl: dataUrlFromBytes(bytes, 'application/octet-stream'),
-            meta: { stream: packageStream.name },
+            dataUrl: dataUrlFromBytes(bytes, mime),
+            meta: { stream: packageStream.name, sourceKind: 'package' },
         };
         info.attachment = attachment;
     }

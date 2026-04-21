@@ -43,6 +43,40 @@ function styleObjectToCss(style: CssStyleObject): string {
     .join(';');
 }
 
+
+function sanitizeLinkHref(href: string | undefined | null): string | null {
+  const value = String(href || '').trim();
+  if (!value) return null;
+  if (/^(?:https?:|mailto:|tel:|ftp:)/i.test(value)) return value;
+  if (value.startsWith('#')) return value;
+  return null;
+}
+
+function sanitizeImageSource(src: string | undefined | null): string | null {
+  const value = String(src || '').trim();
+  if (!value) return null;
+  if (/^data:image\//i.test(value)) return value;
+  if (/^(?:https?:|blob:)/i.test(value)) return value;
+  return null;
+}
+
+function sanitizeAssetHref(href: string | undefined | null): string | null {
+  const value = String(href || '').trim();
+  if (!value) return null;
+  if (/^(?:data:|blob:|https?:)/i.test(value)) return value;
+  return null;
+}
+
+function renderExternalRef(href: string | null): string {
+  if (!href) return '';
+  return `<a class="msdoc-link msdoc-external-ref" href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">↗</a>`;
+}
+
+function joinWithExternalRef(content: string, href: string | null): string {
+  if (!href) return content;
+  return `<span class="msdoc-inline-group">${content}${renderExternalRef(href)}</span>`;
+}
+
 function borderToCss(border: BorderSpec | undefined | null): string | null {
   if (!border) return null;
   const width = Math.max(1, Math.round((((border.lineWidth as number | undefined) ?? 8) / 8) * 1.3333));
@@ -135,33 +169,32 @@ function renderTextNode(node: TextInlineNode): string {
   inlineStyle['white-space'] = 'break-spaces';
   const style = styleObjectToCss(inlineStyle);
   const inner = `<span${style ? ` style="${style}"` : ''}>${content}</span>`;
-  if (node.href) {
-    return `<a class="msdoc-link" href="${escapeHtml(node.href)}" target="_blank" rel="noreferrer noopener">${inner}</a>`;
+  const href = sanitizeLinkHref(node.href);
+  if (href) {
+    return `<a class="msdoc-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${inner}</a>`;
   }
   return inner;
 }
 
 function renderImageNode(node: Extract<InlineNode, { type: 'image' }>): string {
-  const src = node.asset.sourceUrl || node.asset.dataUrl;
+  const src = sanitizeImageSource(node.asset.sourceUrl) || sanitizeImageSource(node.asset.dataUrl);
   const baseStyle = inlineStyleToCss(node.style);
   baseStyle['max-width'] = '100%';
   baseStyle.height = 'auto';
+  const href = sanitizeLinkHref(node.href);
 
   if (!src || node.asset.displayable === false) {
-    const href = src || node.asset.dataUrl;
+    const fallbackHref = sanitizeAssetHref(node.asset.dataUrl) || sanitizeAssetHref(node.asset.sourceUrl);
     const label = escapeHtml(String(node.asset.meta?.linkedPath || node.asset.mime || 'image'));
-    const inner = href
-      ? `<a class="msdoc-attachment msdoc-image-fallback" href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">🖼 ${label}</a>`
+    const inner = fallbackHref
+      ? `<a class="msdoc-attachment msdoc-image-fallback" href="${escapeHtml(fallbackHref)}" target="_blank" rel="noreferrer noopener">🖼 ${label}</a>`
       : `<span class="msdoc-image-fallback">🖼 ${label}</span>`;
-    if (node.href) {
-      return `<a class="msdoc-link" href="${escapeHtml(node.href)}" target="_blank" rel="noreferrer noopener">${inner}</a>`;
-    }
-    return inner;
+    return joinWithExternalRef(inner, href);
   }
 
   const img = `<img class="msdoc-image" src="${escapeHtml(src)}" alt="" style="${styleObjectToCss(baseStyle)}">`;
-  if (node.href) {
-    return `<a class="msdoc-link" href="${escapeHtml(node.href)}" target="_blank" rel="noreferrer noopener">${img}</a>`;
+  if (href) {
+    return `<a class="msdoc-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${img}</a>`;
   }
   return img;
 }
@@ -169,10 +202,7 @@ function renderImageNode(node: Extract<InlineNode, { type: 'image' }>): string {
 function renderAttachmentNode(node: Extract<InlineNode, { type: 'attachment' }>): string {
   const label = escapeHtml(node.asset.name || 'embedded-file');
   const inner = `<a class="msdoc-attachment" href="${escapeHtml(node.asset.dataUrl)}" download="${label}">📎 ${label}</a>`;
-  if (node.href) {
-    return `<a class="msdoc-link" href="${escapeHtml(node.href)}" target="_blank" rel="noreferrer noopener">${inner}</a>`;
-  }
-  return inner;
+  return joinWithExternalRef(inner, sanitizeLinkHref(node.href));
 }
 
 function renderInlineNodes(nodes: InlineNode[]): string {
@@ -272,6 +302,8 @@ export function defaultMsDocCss(): string {
 .msdoc-cell{padding:6px 8px;vertical-align:top;word-break:break-word;overflow-wrap:anywhere}
 .msdoc-link{color:#1a73e8;text-decoration:none}
 .msdoc-link:hover{text-decoration:underline}
+.msdoc-inline-group{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;max-width:100%}
+.msdoc-external-ref{font-size:.9em}
 .msdoc-image{display:inline-block;vertical-align:middle}
 .msdoc-image-fallback{display:inline-flex;align-items:center;gap:6px}
 .msdoc-attachment{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid #d0d7de;border-radius:6px;background:#f6f8fa;color:#0969da;text-decoration:none}

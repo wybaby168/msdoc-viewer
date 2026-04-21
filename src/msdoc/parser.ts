@@ -84,6 +84,47 @@ function decodeFieldInstruction(instruction: unknown): FieldInstruction | null {
   return { type: 'unknown', raw: normalized };
 }
 
+
+function isRenderableExternalImageUrl(url: string): boolean {
+  return /^(?:https?:|blob:)/i.test(url) || /^data:image\//i.test(url);
+}
+
+function createFieldImageAsset(target: string): ImageAsset | null {
+  const normalized = String(target || '').trim();
+  if (!normalized) return null;
+
+  let mime = 'application/octet-stream';
+  if (/\.png(?:$|[?#])/i.test(normalized)) mime = 'image/png';
+  else if (/\.jpe?g(?:$|[?#])/i.test(normalized)) mime = 'image/jpeg';
+  else if (/\.gif(?:$|[?#])/i.test(normalized)) mime = 'image/gif';
+  else if (/\.bmp(?:$|[?#])/i.test(normalized)) mime = 'image/bmp';
+  else if (/\.svg(?:$|[?#])/i.test(normalized)) mime = 'image/svg+xml';
+  else if (/\.tiff?(?:$|[?#])/i.test(normalized)) mime = 'image/tiff';
+
+  const dataUrl = /^data:image\//i.test(normalized) ? normalized : '';
+  const sourceUrl = dataUrl ? undefined : normalized;
+  const localExternal = /^(?:file:|\\\\|[a-zA-Z]:[\\/]|\/)/i.test(normalized);
+
+  return {
+    id: uniqueId('asset-img-field'),
+    type: 'image',
+    mime,
+    bytes: new Uint8Array(0),
+    dataUrl,
+    sourceUrl,
+    displayable: isRenderableExternalImageUrl(normalized) && mime.startsWith('image/'),
+    meta: {
+      sourceKind: 'linked',
+      linkedPath: normalized,
+      localExternal,
+      browserRenderable: isRenderableExternalImageUrl(normalized),
+      pictureOffset: -1,
+      lcb: 0,
+      cbHeader: 0,
+    },
+  };
+}
+
 function mergeTextNode(target: InlineNode[], node: Extract<InlineNode, { type: 'text' }>): void {
   if (!node.text) return;
   const last = target[target.length - 1];
@@ -99,6 +140,7 @@ interface FieldFrame {
   parsed: FieldInstruction | null;
   readingInstruction: boolean;
   nodes: InlineNode[];
+  resultStyle?: CharState;
 }
 
 function emitInline(targetStack: FieldFrame[], output: InlineNode[], node: InlineNode | null | undefined): void {
@@ -188,7 +230,7 @@ function buildInlineNodes(segments: CharSegment[], resolveAsset: (charState: Cha
       const ch = normalizePlainTextChar(rawCh);
 
       if (ch === DOC_CONTROL.fieldStart) {
-        fieldStack.push({ instruction: '', parsed: null, readingInstruction: true, nodes: [] });
+        fieldStack.push({ instruction: '', parsed: null, readingInstruction: true, nodes: [], resultStyle: segment.state });
         continue;
       }
       if (ch === DOC_CONTROL.fieldSeparator) {
@@ -206,6 +248,10 @@ function buildInlineNodes(segments: CharSegment[], resolveAsset: (charState: Cha
         if (current.readingInstruction) {
           current.parsed = decodeFieldInstruction(current.instruction);
         }
+        if (current.parsed?.type === 'includePicture' && !nodes.some((node) => node.type === 'image' || node.type === 'attachment')) {
+          const asset = createFieldImageAsset(current.parsed.target);
+          if (asset) nodes = [{ type: 'image', asset, style: current.resultStyle || segment.state }];
+        }
         if (current.parsed?.type === 'hyperlink') {
           const href = current.parsed.href;
           nodes = nodes.map((node) => {
@@ -222,6 +268,7 @@ function buildInlineNodes(segments: CharSegment[], resolveAsset: (charState: Cha
         currentField.instruction += ch;
         continue;
       }
+      if (currentField && !currentField.resultStyle) currentField.resultStyle = segment.state;
 
       if (ch === DOC_CONTROL.hardLineBreak) {
         emitInline(fieldStack, output, { type: 'lineBreak' });
@@ -505,6 +552,29 @@ function buildBlocks(paragraphs: ParagraphModel[]): MsDocParseResult['blocks'] {
   return blocks;
 }
 
+function collectAssetWarnings(assets: MsDocAsset[], warnings: MsDocParseResult['warnings']): void {
+  for (const asset of assets) {
+    if (asset.type !== 'image') continue;
+    if (asset.mime === 'application/octet-stream') {
+      pushWarning(warnings, 'Encountered picture data that could not be decoded to a supported image payload', {
+        code: 'unsupported-image-payload',
+        severity: 'warning',
+        offset: asset.meta?.pictureOffset,
+        details: { mime: asset.mime, sourceKind: asset.meta?.sourceKind },
+      });
+      continue;
+    }
+    if (asset.displayable === false) {
+      pushWarning(warnings, 'Encountered an image that was parsed but is not directly browser-displayable', {
+        code: asset.meta?.localExternal ? 'linked-local-image' : 'non-displayable-image',
+        severity: 'warning',
+        offset: asset.meta?.pictureOffset,
+        details: { mime: asset.mime, sourceUrl: asset.sourceUrl, linkedPath: asset.meta?.linkedPath },
+      });
+    }
+  }
+}
+
 /**
  * Main MS-DOC entry point.
  * It parses the OLE container, restores text through the piece table, resolves
@@ -578,6 +648,8 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
   if (trailingAttachments.length) {
     blocks.push({ type: 'attachments', id: uniqueId('attachments'), items: trailingAttachments });
   }
+
+  collectAssetWarnings(assets, warnings);
 
   return {
     kind: 'msdoc',

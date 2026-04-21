@@ -1,3 +1,4 @@
+import assert from 'assert/strict';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -41,11 +42,219 @@ if (!imageAssets.every((asset) => asset.displayable !== false && /^(image\/png|i
   throw new Error(`Embedded image fixture did not resolve to browser-displayable raster assets: ${imageAssets.map((asset) => asset.mime).join(', ')}`);
 }
 
+const linkedFixture = sampleResults.find((item) => item.file.endsWith(path.join('fixtures', 'image-linked.doc')));
+if (!linkedFixture) {
+  throw new Error('Missing linked image fixture for smoke test');
+}
+const linkedImages = linkedFixture.parsed.assets.filter((asset) => asset.type === 'image');
+assert.ok(linkedImages.length >= 2, 'Expected linked image fixture to expose linked image assets');
+assert.ok(linkedImages.every((asset) => asset.displayable === false), 'Local external linked images should not be marked as displayable');
+assert.ok(linkedImages.every((asset) => asset.meta?.localExternal === true), 'Local external linked images should be tagged in asset metadata');
+assert.ok(!/href="file:\/\//i.test(linkedFixture.rendered.html), 'Rendered HTML must not emit clickable file:// links for local external images');
+
+const securityRendered = renderMsDoc({
+  kind: 'msdoc',
+  version: 1,
+  warnings: [],
+  meta: {
+    fib: {
+      wIdent: 0xA5EC,
+      nFib: 0,
+      fWhichTblStm: 0,
+      fComplex: false,
+      fEncrypted: false,
+      ccpText: 0,
+    },
+    counts: {
+      paragraphs: 1,
+      blocks: 1,
+      assets: 2,
+      styles: 0,
+      fonts: 0,
+    },
+  },
+  fonts: [],
+  styles: [],
+  assets: [
+    {
+      id: 'asset-img-unsafe',
+      type: 'image',
+      mime: 'image/png',
+      bytes: new Uint8Array(0),
+      dataUrl: '',
+      sourceUrl: 'file:///tmp/unsafe.png',
+      displayable: false,
+      meta: { pictureOffset: -1, lcb: 0, cbHeader: 0, sourceKind: 'linked', localExternal: true },
+    },
+    {
+      id: 'asset-attachment-1',
+      type: 'attachment',
+      name: 'embedded.bin',
+      mime: 'application/octet-stream',
+      bytes: new Uint8Array(0),
+      dataUrl: 'data:application/octet-stream;base64,AA==',
+    },
+  ],
+  blocks: [
+    {
+      type: 'paragraph',
+      id: 'p1',
+      styleId: 0,
+      styleName: '',
+      text: 'unsafe',
+      paraState: {
+        styleId: 0,
+        alignment: 0,
+        spacingBefore: 0,
+        spacingAfter: 0,
+        lineSpacing: 0,
+        leftIndent: 0,
+        rightIndent: 0,
+        firstLineIndent: 0,
+        keepLines: false,
+        keepNext: false,
+        pageBreakBefore: false,
+        widowControl: false,
+        inTable: false,
+        tableRowEnd: false,
+        innerTableCell: false,
+        innerTableRowEnd: false,
+        itap: 0,
+        dtap: 0,
+        rtlPara: false,
+        adjustRight: false,
+        borders: {},
+      },
+      inlines: [
+        {
+          type: 'text',
+          text: 'bad link',
+          href: 'javascript:alert(1)',
+          style: {
+            bold: false,
+            italic: false,
+            strike: false,
+            underline: 0,
+            spacing: 0,
+            positionHalfPoints: 0,
+            scale: 100,
+            hidden: false,
+            smallCaps: false,
+            caps: false,
+            outline: false,
+            shadow: false,
+            emboss: false,
+            imprint: false,
+            rtl: false,
+            rtlChar: false,
+            vanish: false,
+            revision: false,
+            data: false,
+            object: false,
+            ole2: false,
+            symbol: false,
+            fieldVanish: false,
+            boldBi: false,
+            italicBi: false,
+            doubleStrike: false,
+          },
+        },
+        {
+          type: 'image',
+          asset: {
+            id: 'unsafe-image',
+            type: 'image',
+            mime: 'image/png',
+            bytes: new Uint8Array(0),
+            dataUrl: '',
+            sourceUrl: 'file:///tmp/local.png',
+            displayable: false,
+            meta: { pictureOffset: -1, lcb: 0, cbHeader: 0, sourceKind: 'linked', localExternal: true },
+          },
+          href: 'javascript:alert(2)',
+          style: {
+            bold: false,
+            italic: false,
+            strike: false,
+            underline: 0,
+            spacing: 0,
+            positionHalfPoints: 0,
+            scale: 100,
+            hidden: false,
+            smallCaps: false,
+            caps: false,
+            outline: false,
+            shadow: false,
+            emboss: false,
+            imprint: false,
+            rtl: false,
+            rtlChar: false,
+            vanish: false,
+            revision: false,
+            data: false,
+            object: false,
+            ole2: false,
+            symbol: false,
+            fieldVanish: false,
+            boldBi: false,
+            italicBi: false,
+            doubleStrike: false,
+          },
+        },
+        {
+          type: 'attachment',
+          asset: {
+            id: 'attachment-inline',
+            type: 'attachment',
+            name: 'inline.bin',
+            mime: 'application/octet-stream',
+            bytes: new Uint8Array(0),
+            dataUrl: 'data:application/octet-stream;base64,AA==',
+          },
+          href: 'https://example.com/spec',
+          style: {
+            bold: false,
+            italic: false,
+            strike: false,
+            underline: 0,
+            spacing: 0,
+            positionHalfPoints: 0,
+            scale: 100,
+            hidden: false,
+            smallCaps: false,
+            caps: false,
+            outline: false,
+            shadow: false,
+            emboss: false,
+            imprint: false,
+            rtl: false,
+            rtlChar: false,
+            vanish: false,
+            revision: false,
+            data: false,
+            object: false,
+            ole2: false,
+            symbol: false,
+            fieldVanish: false,
+            boldBi: false,
+            italicBi: false,
+            doubleStrike: false,
+          },
+        },
+      ],
+    },
+  ],
+});
+assert.ok(!/javascript:alert\(/i.test(securityRendered.html), 'Rendered HTML must strip javascript: links');
+assert.ok(!/href="file:\/\//i.test(securityRendered.html), 'Rendered HTML must not emit clickable local file URLs');
+assert.ok(!/<a[^>]*>\s*<a/i.test(securityRendered.html), 'Rendered HTML must not contain nested anchors');
+
 console.log('sample:', defaultSample.file);
 console.log('counts:', defaultSample.parsed.meta.counts);
 console.log('warnings:', defaultSample.parsed.warnings.length);
 console.log('image fixture:', imageFixture.file);
 console.log('image assets:', imageAssets.map((asset) => ({ mime: asset.mime, displayable: asset.displayable })));
+console.log('linked image warnings:', linkedFixture.parsed.warnings.map((warning) => warning.code || warning.message));
 
 fs.writeFileSync(
   new URL('./rendered-sample.html', import.meta.url),

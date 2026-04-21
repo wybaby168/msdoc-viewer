@@ -2,6 +2,10 @@ export type BinaryInput = ArrayBuffer | Uint8Array | ArrayBufferView;
 
 export interface MsDocWarning {
   message: string;
+  code?: string;
+  severity?: 'info' | 'warning' | 'error';
+  offset?: number;
+  details?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -456,6 +460,38 @@ export interface FieldInstructionRaw {
 
 export type FieldInstruction = FieldInstructionHyperlink | FieldInstructionIncludePicture | FieldInstructionRaw;
 
+
+export interface PicfSummary {
+  pictureOffset: number;
+  lcb: number;
+  cbHeader: number;
+  mm?: number;
+  xExt?: number;
+  yExt?: number;
+}
+
+export interface OfficeArtBlipMeta {
+  recType?: number;
+  recInstance?: number;
+}
+
+export interface ImageAssetMeta extends PicfSummary, OfficeArtBlipMeta {
+  linkedPath?: string;
+  sourceKind?: 'embedded' | 'linked' | 'fallback';
+  localExternal?: boolean;
+  browserRenderable?: boolean;
+}
+
+export interface AttachmentAssetMeta {
+  stream?: string;
+  label?: string;
+  originalPath?: string;
+  tempPath?: string;
+  dataSize?: number;
+  sourceKind?: 'ole10-native' | 'package' | 'content' | 'unknown';
+  [key: string]: unknown;
+}
+
 export interface ImageAsset {
   id: string;
   type: 'image';
@@ -464,7 +500,7 @@ export interface ImageAsset {
   dataUrl: string;
   sourceUrl?: string;
   displayable?: boolean;
-  meta?: Record<string, unknown>;
+  meta?: ImageAssetMeta;
 }
 
 export interface AttachmentAsset {
@@ -474,7 +510,7 @@ export interface AttachmentAsset {
   mime: string;
   bytes: Uint8Array;
   dataUrl: string;
-  meta?: Record<string, unknown>;
+  meta?: AttachmentAssetMeta;
 }
 
 export type MsDocAsset = ImageAsset | AttachmentAsset;
