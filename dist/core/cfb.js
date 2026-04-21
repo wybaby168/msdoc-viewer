@@ -10,15 +10,15 @@ const MINI_STREAM_CUTOFF = 4096;
 function isSpecialSectorId(sid) {
     return sid === FREESECT || sid === ENDOFCHAIN || sid === FATSECT || sid === DIFSECT;
 }
-function readSectorAbsolute(bytes, sectorSize, sid) {
+function readSectorAbsolute(bytes, sectorSize, sid, byteLength = sectorSize) {
     const start = 512 + sid * sectorSize;
-    const end = start + sectorSize;
+    const end = start + byteLength;
     if (start < 0 || end > bytes.length) {
         throw new Error(`Sector ${sid} is out of bounds`);
     }
     return bytes.subarray(start, end);
 }
-function collectChain(startSid, nextSectorFn, limit = MAX_CHAIN_SECTORS) {
+function collectChain(startSid, nextSectorFn, limit = MAX_CHAIN_SECTORS, maxSegments = null) {
     const chain = [];
     const seen = new Set();
     let sid = startSid;
@@ -28,6 +28,8 @@ function collectChain(startSid, nextSectorFn, limit = MAX_CHAIN_SECTORS) {
             throw new Error(`Detected sector loop at ${sid}`);
         seen.add(sid);
         chain.push(sid);
+        if (maxSegments != null && chain.length >= maxSegments)
+            break;
         sid = nextSectorFn(sid);
         guard += 1;
         if (guard > limit)
@@ -35,18 +37,38 @@ function collectChain(startSid, nextSectorFn, limit = MAX_CHAIN_SECTORS) {
     }
     return chain;
 }
-function readChainBytes(bytes, sectorSize, startSid, fat, expectedSize = null) {
+/**
+ * Reads a FAT-backed stream chain. When the directory entry declares a stream size,
+ * we only materialize the number of sectors required for that logical byte length.
+ * This avoids false out-of-bounds failures on files whose final physical sector is
+ * present only up to the used byte count of the stream tail.
+ */
+function readChainBytes(bytes, sectorSize, startSid, fat, expectedSize = null, warnings, context = 'stream') {
+    if (expectedSize === 0)
+        return new Uint8Array(0);
     if (startSid === ENDOFCHAIN || startSid === FREESECT || startSid < 0) {
         return new Uint8Array(0);
     }
-    const chain = collectChain(startSid, (sid) => fat[sid] ?? ENDOFCHAIN);
-    const out = new Uint8Array(chain.length * sectorSize);
+    const expectedSectorCount = expectedSize == null ? null : Math.ceil(expectedSize / sectorSize);
+    const chain = collectChain(startSid, (sid) => fat[sid] ?? ENDOFCHAIN, expectedSectorCount != null ? Math.max(expectedSectorCount + 8, 32) : MAX_CHAIN_SECTORS, expectedSectorCount);
+    if (expectedSize != null && chain.length * sectorSize < expectedSize) {
+        pushWarning(warnings ?? [], `Sector chain for ${context} is shorter than declared stream size`, {
+            code: 'cfb-short-stream-chain',
+            severity: 'warning',
+            details: { expectedSize, sectorSize, chainLength: chain.length, startSid, context },
+        });
+    }
+    const outputLength = expectedSize == null ? chain.length * sectorSize : Math.min(expectedSize, chain.length * sectorSize);
+    const out = new Uint8Array(outputLength);
     let offset = 0;
     for (const sid of chain) {
-        out.set(readSectorAbsolute(bytes, sectorSize, sid), offset);
-        offset += sectorSize;
+        if (offset >= outputLength)
+            break;
+        const chunkLength = Math.min(sectorSize, outputLength - offset);
+        out.set(readSectorAbsolute(bytes, sectorSize, sid, chunkLength), offset);
+        offset += chunkLength;
     }
-    return expectedSize == null ? out : out.subarray(0, Math.min(expectedSize, out.length));
+    return out;
 }
 function parseDirectoryTree(entries) {
     function walkSiblings(entryId, out) {
@@ -129,6 +151,14 @@ export function parseCFB(input, _options = {}) {
     const numMiniFatSectors = reader.u32(64);
     const firstDifatSector = reader.i32(68);
     const numDifatSectors = reader.u32(72);
+    const payloadSize = Math.max(0, bytes.length - 512);
+    if (payloadSize % sectorSize !== 0) {
+        pushWarning(warnings, 'Compound file payload is not aligned to the declared sector size; tolerant stream reads enabled', {
+            code: 'cfb-partial-tail-sector',
+            severity: 'warning',
+            details: { sectorSize, payloadSize, remainder: payloadSize % sectorSize },
+        });
+    }
     if (miniStreamCutoffSize !== MINI_STREAM_CUTOFF) {
         pushWarning(warnings, `Unexpected mini stream cutoff size ${miniStreamCutoffSize}`);
     }
@@ -168,7 +198,7 @@ export function parseCFB(input, _options = {}) {
             fat.push(fatReader.i32(i * 4));
         }
     }
-    const directoryBytes = readChainBytes(bytes, sectorSize, firstDirSector, fat);
+    const directoryBytes = readChainBytes(bytes, sectorSize, firstDirSector, fat, null, warnings, 'directory stream');
     const directoryReader = new BinaryReader(directoryBytes);
     const entries = [];
     for (let offset = 0, id = 0; offset + 128 <= directoryBytes.length; offset += 128, id += 1) {
@@ -198,28 +228,40 @@ export function parseCFB(input, _options = {}) {
     const pathMap = buildPathMap(entries);
     const miniFat = [];
     if (numMiniFatSectors && firstMiniFatSector >= 0) {
-        const miniFatBytes = readChainBytes(bytes, sectorSize, firstMiniFatSector, fat);
+        const miniFatBytes = readChainBytes(bytes, sectorSize, firstMiniFatSector, fat, numMiniFatSectors * sectorSize, warnings, 'mini FAT');
         const miniFatReader = new BinaryReader(miniFatBytes);
         for (let i = 0; i + 4 <= miniFatBytes.length; i += 4) {
             miniFat.push(miniFatReader.i32(i));
         }
     }
-    const rootStreamBytes = readChainBytes(bytes, sectorSize, root.startSector, fat, root.streamSize);
+    const rootStreamBytes = readChainBytes(bytes, sectorSize, root.startSector, fat, root.streamSize, warnings, 'root mini stream');
     function readMiniStream(entry) {
-        if (entry.startSector < 0)
+        if (entry.streamSize === 0 || entry.startSector < 0)
             return new Uint8Array(0);
-        const chain = collectChain(entry.startSector, (sid) => miniFat[sid] ?? ENDOFCHAIN);
-        const out = new Uint8Array(chain.length * miniSectorSize);
+        const expectedMiniSectorCount = Math.ceil(entry.streamSize / miniSectorSize);
+        const chain = collectChain(entry.startSector, (sid) => miniFat[sid] ?? ENDOFCHAIN, Math.max(expectedMiniSectorCount + 8, 32), expectedMiniSectorCount);
+        if (chain.length * miniSectorSize < entry.streamSize) {
+            pushWarning(warnings, `Mini stream chain for ${entry.path || entry.name || 'stream'} is shorter than declared stream size`, {
+                code: 'cfb-short-mini-stream-chain',
+                severity: 'warning',
+                details: { entryName: entry.name, path: entry.path, streamSize: entry.streamSize, miniSectorSize, chainLength: chain.length },
+            });
+        }
+        const outputLength = Math.min(entry.streamSize, chain.length * miniSectorSize);
+        const out = new Uint8Array(outputLength);
         let offset = 0;
         for (const miniSid of chain) {
+            if (offset >= outputLength)
+                break;
             const start = miniSid * miniSectorSize;
-            const end = start + miniSectorSize;
+            const chunkLength = Math.min(miniSectorSize, outputLength - offset);
+            const end = start + chunkLength;
             if (end > rootStreamBytes.length)
                 throw new Error(`Mini sector ${miniSid} is out of bounds`);
             out.set(rootStreamBytes.subarray(start, end), offset);
-            offset += miniSectorSize;
+            offset += chunkLength;
         }
-        return out.subarray(0, Math.min(entry.streamSize, out.length));
+        return out;
     }
     function getStream(identifier) {
         const entry = typeof identifier === 'string' ? pathMap.get(identifier) ?? null : identifier;
@@ -232,7 +274,7 @@ export function parseCFB(input, _options = {}) {
         if (entry.streamSize < miniStreamCutoffSize && entry.startSector >= 0 && miniFat.length) {
             return readMiniStream(entry);
         }
-        return readChainBytes(bytes, sectorSize, entry.startSector, fat, entry.streamSize);
+        return readChainBytes(bytes, sectorSize, entry.startSector, fat, entry.streamSize, warnings, entry.path || entry.name || 'stream');
     }
     function listChildren(path) {
         const entry = typeof path === 'string' ? pathMap.get(path) ?? null : path;

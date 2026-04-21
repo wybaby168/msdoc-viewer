@@ -6,6 +6,7 @@ const MM_SHAPE = 0x0064;
 const MM_SHAPEFILE = 0x0066;
 const OFFICEART_CONTAINER = 0xf;
 const OFFICEART_TYPE_INLINE_SP_CONTAINER = 0xf004;
+const OFFICEART_FBSE = 0xf007;
 const OFFICEART_BLIP_EMF = 0xf01a;
 const OFFICEART_BLIP_WMF = 0xf01b;
 const OFFICEART_BLIP_PICT = 0xf01c;
@@ -271,6 +272,64 @@ function dibToBmp(dibBytes) {
     out.set(dibBytes, 14);
     return out;
 }
+function detectMimeFromBlipType(blipType) {
+    switch (blipType) {
+        case 0x02: return 'image/emf';
+        case 0x03: return 'image/wmf';
+        case 0x04: return 'image/pict';
+        case 0x05: return 'image/jpeg';
+        case 0x06: return 'image/png';
+        case 0x07: return 'image/dib';
+        case 0x11: return 'image/tiff';
+        case 0x12: return 'image/jpeg';
+        default: return null;
+    }
+}
+/**
+ * OfficeArtBStoreContainerFileBlock can wrap an OfficeArtFBSE record instead of a
+ * BLIP atom directly. In that case the actual image payload sits in the FBSE
+ * embeddedBlip field after the fixed 36-byte FBSE header and optional nameData.
+ */
+function extractEmbeddedBlipFromFbse(bytes, offset, header) {
+    const payloadOffset = offset + 8;
+    const payloadEnd = payloadOffset + header.recLen;
+    if (payloadEnd > bytes.length || header.recLen < 36)
+        return null;
+    const reader = new BinaryReader(bytes);
+    const btWin32 = reader.u8(payloadOffset);
+    const btMacOS = reader.u8(payloadOffset + 1);
+    const tag = reader.u16(payloadOffset + 18);
+    const size = reader.u32(payloadOffset + 20);
+    const cRef = reader.u32(payloadOffset + 24);
+    const foDelay = reader.u32(payloadOffset + 28);
+    const cbName = reader.u8(payloadOffset + 33);
+    const nameOffset = payloadOffset + 36;
+    const embeddedBlipOffset = nameOffset + cbName;
+    if (embeddedBlipOffset + 8 > payloadEnd)
+        return null;
+    const embeddedHeader = parseOfficeArtRecordHeader(bytes, embeddedBlipOffset);
+    if (!embeddedHeader)
+        return null;
+    const candidate = extractBlipPayload(bytes, embeddedBlipOffset, embeddedHeader);
+    if (!candidate)
+        return null;
+    const fbseName = cbName > 0 && nameOffset + cbName <= payloadEnd
+        ? new TextDecoder('utf-16le').decode(bytes.subarray(nameOffset, nameOffset + Math.max(0, cbName - 2))).replace(/ +$/g, '')
+        : '';
+    return {
+        ...candidate,
+        meta: {
+            ...(candidate.meta || {}),
+            fbseBlipType: btWin32 || btMacOS,
+            fbseMime: detectMimeFromBlipType(btWin32 || btMacOS),
+            fbseTag: tag,
+            fbseSize: size,
+            fbseRefCount: cRef,
+            fbseDelayOffset: foDelay,
+            fbseName,
+        },
+    };
+}
 function extractBlipPayload(bytes, offset, header) {
     const payloadOffset = offset + 8;
     const uidCount = (header.recInstance & 0x1) === 1 ? 2 : 1;
@@ -334,6 +393,11 @@ function collectOfficeArtCandidates(bytes, offset, end, out) {
         if (header.recVer === OFFICEART_CONTAINER) {
             collectOfficeArtCandidates(bytes, cursor + 8, next, out);
         }
+        else if (header.recType === OFFICEART_FBSE) {
+            const candidate = extractEmbeddedBlipFromFbse(bytes, cursor, header);
+            if (candidate)
+                out.push(candidate);
+        }
         else {
             const candidate = extractBlipPayload(bytes, cursor, header);
             if (candidate)
@@ -351,11 +415,8 @@ function collectOfficeArtCandidates(bytes, offset, end, out) {
 function findOfficeArtCandidates(pictureChunk, startOffset) {
     if (startOffset < 0 || startOffset + 8 > pictureChunk.length)
         return [];
-    const directHeader = parseOfficeArtRecordHeader(pictureChunk, startOffset);
-    if (!directHeader)
-        return [];
     const candidates = [];
-    collectOfficeArtCandidates(pictureChunk, startOffset, Math.min(startOffset + directHeader.size, pictureChunk.length), candidates);
+    collectOfficeArtCandidates(pictureChunk, startOffset, pictureChunk.length, candidates);
     return candidates;
 }
 function rankPictureCandidate(candidate) {

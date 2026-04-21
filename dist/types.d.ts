@@ -436,6 +436,13 @@ export interface PicfSummary {
 export interface OfficeArtBlipMeta {
     recType?: number;
     recInstance?: number;
+    fbseBlipType?: number;
+    fbseMime?: string | null;
+    fbseTag?: number;
+    fbseSize?: number;
+    fbseRefCount?: number;
+    fbseDelayOffset?: number;
+    fbseName?: string;
 }
 export interface ImageAssetMeta extends PicfSummary, OfficeArtBlipMeta {
     linkedPath?: string;

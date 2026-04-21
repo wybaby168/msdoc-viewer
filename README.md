@@ -19,7 +19,7 @@
 
 已经覆盖的主要能力：
 
-- CFB/OLE 容器读取
+- CFB/OLE 容器读取（包含对尾部非整扇区流的容错读取，避免因最后一个未用满的扇区误报越界）
 - FIB（`FibBase` / `FibRgLw` / `FibRgFcLcb`）解析
 - CLX / Piece Table 文本恢复
 - FKP（PAPX / CHPX）属性读取
@@ -28,7 +28,7 @@
 - 常见字符样式：粗体、斜体、下划线、删除线、字号、颜色、高亮、大小写、上下标、字体切换
 - 常见段落样式：对齐、缩进、段前后距、行距、分页控制、边框
 - 表格：`sprmTDefTable`、单元格宽度、横向/纵向合并、边框、垂直对齐、nowrap、fitText
-- 图片：按 `PICFAndOfficeArtData` / `PICF` / `OfficeArtInlineSpContainer` / `OfficeArtBlip*` 解析，优先提取浏览器可直接显示的 PNG/JPEG/BMP 等位图
+- 图片：按 `PICFAndOfficeArtData` / `PICF` / `OfficeArtInlineSpContainer` / `OfficeArtBStoreContainerFileBlock` / `OfficeArtFBSE` / `OfficeArtBlip*` 解析，优先提取浏览器可直接显示的 PNG/JPEG/BMP 等位图
 - 链接图片：识别 `stPicName` / 外链目标，无法内嵌的本地 `file://` 图片会以非点击型回退占位展示，而不是输出损坏的 `<img>` 或不可用链接
 - OLE / ObjectPool 附件提取
 - 域代码的基础处理（例如超链接、`INCLUDEPICTURE` 外链图片）
@@ -206,11 +206,12 @@ import type {
 
 ## 图片解析说明
 
-当前图片链路不再依赖“从 Data 流里扫 PNG/JPEG 魔数”这种脆弱策略，而是按规范做结构化解析：
+当前图片链路不再把“从 Data 流里扫 PNG/JPEG 魔数”当成主路径，而是按规范做结构化解析；只有在极少数结构异常文档里才退回签名扫描：
 
 - 通过字符属性里的 `sprmCPicLocation` 找到 Data 流偏移
 - 按 `PICFAndOfficeArtData` 读取 `PICF` 头和可选的 `stPicName`
 - 递归遍历 `OfficeArtInlineSpContainer` / `OfficeArt` 记录头
+- 支持 `OfficeArtInlineSpContainer` 后续的 `rgfb` 文件块，识别 `OfficeArtBStoreContainerFileBlock` / `OfficeArtFBSE` 中嵌入的 `OfficeArtBlip*`
 - 命中 `OfficeArtBlipPNG`、`OfficeArtBlipJPEG`、`OfficeArtBlipDIB`、`OfficeArtBlipTIFF` 等 BLIP 记录后，按各自记录布局提取真正的图片负载
 - 对 DIB 自动转成浏览器可显示的 BMP
 - 对只包含本地外链路径而不包含实际位图数据的图片，保留链接元数据并渲染为回退占位，避免错误地输出损坏图片
