@@ -462,6 +462,8 @@ export interface ImageAsset {
   mime: string;
   bytes: Uint8Array;
   dataUrl: string;
+  sourceUrl?: string;
+  displayable?: boolean;
   meta?: Record<string, unknown>;
 }
 

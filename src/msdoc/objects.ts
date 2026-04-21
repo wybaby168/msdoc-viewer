@@ -9,12 +9,94 @@ import type {
   ParsedCFB,
 } from '../types.js';
 
+const DEFAULT_MAX_PICTURE_BYTES = 8 * 1024 * 1024;
+const PICF_HEADER_SIZE = 68;
+const MM_SHAPE = 0x0064;
+const MM_SHAPEFILE = 0x0066;
+
+const OFFICEART_CONTAINER = 0xf;
+const OFFICEART_TYPE_INLINE_SP_CONTAINER = 0xf004;
+const OFFICEART_BLIP_EMF = 0xf01a;
+const OFFICEART_BLIP_WMF = 0xf01b;
+const OFFICEART_BLIP_PICT = 0xf01c;
+const OFFICEART_BLIP_JPEG = 0xf01d;
+const OFFICEART_BLIP_PNG = 0xf01e;
+const OFFICEART_BLIP_DIB = 0xf01f;
+const OFFICEART_BLIP_TIFF = 0xf029;
+const OFFICEART_BLIP_JPEG_ALT = 0xf02a;
+
+interface PicfHeader {
+  lcb: number;
+  cbHeader: number;
+  mm: number;
+  xExt: number;
+  yExt: number;
+}
+
+interface OfficeArtRecordHeader {
+  recVer: number;
+  recInstance: number;
+  recType: number;
+  recLen: number;
+  size: number;
+}
+
+interface PictureNameInfo {
+  value: string;
+  nextOffset: number;
+}
+
+interface PictureCandidate {
+  mime: string;
+  bytes: Uint8Array;
+  displayable: boolean;
+  kind: 'officeArt' | 'linked' | 'fallback';
+  sourceUrl?: string;
+  meta?: Record<string, unknown>;
+}
+
 function startsWith(bytes: Uint8Array, signature: number[], offset = 0): boolean {
   if (offset + signature.length > bytes.length) return false;
   for (let i = 0; i < signature.length; i += 1) {
     if (bytes[offset + i] !== signature[i]) return false;
   }
   return true;
+}
+
+function isPrintableAnsi(bytes: Uint8Array): boolean {
+  for (let i = 0; i < bytes.length; i += 1) {
+    const value = bytes[i] ?? 0;
+    if (value === 0 || value === 9 || value === 10 || value === 13) continue;
+    if (value < 0x20 || value === 0x7f) return false;
+  }
+  return true;
+}
+
+function isProbablyPicturePath(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  if (/^(?:file|https?|data|blob):/i.test(normalized)) return true;
+  if (/^(?:\\\\|[a-zA-Z]:[\\/]|\/)/.test(normalized)) return true;
+  return /\.(?:png|apng|jpe?g|gif|bmp|dib|tiff?|emf|wmf|pict|svg)(?:$|[?#])/i.test(normalized);
+}
+
+function detectMimeFromPath(path: string): string | null {
+  const normalized = path.toLowerCase();
+  if (normalized.includes('.png')) return 'image/png';
+  if (normalized.includes('.jpg') || normalized.includes('.jpeg')) return 'image/jpeg';
+  if (normalized.includes('.gif')) return 'image/gif';
+  if (normalized.includes('.bmp')) return 'image/bmp';
+  if (normalized.includes('.dib')) return 'image/bmp';
+  if (normalized.includes('.tif')) return 'image/tiff';
+  if (normalized.includes('.emf')) return 'image/emf';
+  if (normalized.includes('.wmf')) return 'image/wmf';
+  if (normalized.includes('.pict') || normalized.includes('.pct') || normalized.includes('.pic')) return 'image/pict';
+  if (normalized.includes('.svg')) return 'image/svg+xml';
+  return null;
+}
+
+function isBrowserDisplayableMime(mime: string): boolean {
+  return /^(?:image\/png|image\/jpeg|image\/gif|image\/bmp|image\/webp|image\/svg\+xml|image\/tiff)$/i.test(mime);
 }
 
 export function detectImageSegment(bytes: Uint8Array): { mime: string; start: number; end: number } | null {
@@ -31,6 +113,7 @@ export function detectImageSegment(bytes: Uint8Array): { mime: string; start: nu
   for (let i = 0; i < bytes.length - 4; i += 1) {
     for (const sig of sigs) {
       if (startsWith(bytes, sig.magic, i)) {
+        if (sig.mime === 'image/emf' && findEmfEnd(bytes, i) === bytes.length) continue;
         const end = sig.end ? sig.end(bytes, i) : bytes.length;
         return { mime: sig.mime, start: i, end: end || bytes.length };
       }
@@ -69,28 +152,288 @@ function findBmpEnd(bytes: Uint8Array, start: number): number {
 }
 
 function findEmfEnd(bytes: Uint8Array, start: number): number {
-  if (start + 48 <= bytes.length) {
-    const reader = new BinaryReader(bytes.subarray(start));
-    const size = reader.u32(40);
-    if (size > 0 && start + size <= bytes.length) return start + size;
-  }
+  if (start + 52 > bytes.length) return bytes.length;
+  const reader = new BinaryReader(bytes.subarray(start));
+  const iType = reader.u32(0);
+  const signature = reader.u32(40);
+  const nBytes = reader.u32(48);
+  if (iType !== 0x00000001 || signature !== 0x464d4520) return bytes.length;
+  if (nBytes > 0 && start + nBytes <= bytes.length) return start + nBytes;
   return bytes.length;
 }
 
+function parsePicfHeader(bytes: Uint8Array): PicfHeader | null {
+  if (bytes.length < PICF_HEADER_SIZE) return null;
+  const reader = new BinaryReader(bytes);
+  return {
+    lcb: reader.i32(0),
+    cbHeader: reader.u16(4),
+    mm: reader.u16(6),
+    xExt: reader.i16(8),
+    yExt: reader.i16(10),
+  };
+}
+
+/**
+ * PICFAndOfficeArtData can optionally carry a length-prefixed ANSI path right after
+ * the 68-byte PICF header. The spec ties this to MM_SHAPEFILE, but real-world files
+ * are not always perfectly spec-compliant, so we also accept clearly path-like data.
+ */
+function readOptionalPictureName(pictureChunk: Uint8Array, picf: PicfHeader): PictureNameInfo | null {
+  const offset = Math.min(picf.cbHeader || PICF_HEADER_SIZE, pictureChunk.length);
+  if (offset >= pictureChunk.length) return null;
+  const length = pictureChunk[offset] ?? 0;
+  if (!length || offset + 1 + length > pictureChunk.length) return null;
+  const raw = pictureChunk.subarray(offset + 1, offset + 1 + length);
+  if (!isPrintableAnsi(raw)) return null;
+  const value = new TextDecoder('windows-1252').decode(raw).replace(/\0+$/g, '');
+  if (!isProbablyPicturePath(value)) {
+    if (picf.mm !== MM_SHAPEFILE) return null;
+  }
+  return { value, nextOffset: offset + 1 + length };
+}
+
+/**
+ * OfficeArt records all start with the common 8-byte OfficeArtRecordHeader.
+ * Parsing this explicitly lets us walk inline shape containers instead of guessing
+ * image payloads by magic bytes, which was the root cause of the broken image output.
+ */
+function parseOfficeArtRecordHeader(bytes: Uint8Array, offset: number): OfficeArtRecordHeader | null {
+  if (offset < 0 || offset + 8 > bytes.length) return null;
+  const reader = new BinaryReader(bytes);
+  const versionAndInstance = reader.u16(offset);
+  const recType = reader.u16(offset + 2);
+  const recLen = reader.u32(offset + 4);
+  if (recType < 0xf000 || recType > 0xffff) return null;
+  const size = 8 + recLen;
+  if (recLen > bytes.length || offset + size > bytes.length) return null;
+  return {
+    recVer: versionAndInstance & 0x000f,
+    recInstance: versionAndInstance >>> 4,
+    recType,
+    recLen,
+    size,
+  };
+}
+
+function createBitmapFileHeader(pixelOffset: number, totalSize: number): Uint8Array {
+  const header = new Uint8Array(14);
+  const view = new DataView(header.buffer);
+  view.setUint8(0, 0x42);
+  view.setUint8(1, 0x4d);
+  view.setUint32(2, totalSize, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, 0, true);
+  view.setUint32(10, pixelOffset, true);
+  return header;
+}
+
+function dibToBmp(dibBytes: Uint8Array): Uint8Array | null {
+  if (dibBytes.length < 12) return null;
+  const reader = new BinaryReader(dibBytes);
+  const headerSize = reader.u32(0);
+  if (headerSize < 12 || headerSize > dibBytes.length) return null;
+
+  let bitsPerPixel = 0;
+  let compression = 0;
+  let colorsUsed = 0;
+  let paletteEntrySize = 4;
+  if (headerSize === 12) {
+    bitsPerPixel = reader.u16(10);
+    paletteEntrySize = 3;
+  } else {
+    bitsPerPixel = reader.u16(14);
+    compression = reader.u32(16);
+    colorsUsed = reader.u32(32);
+  }
+
+  const colorCount = colorsUsed || (bitsPerPixel > 0 && bitsPerPixel <= 8 ? 1 << bitsPerPixel : 0);
+  let paletteSize = colorCount * paletteEntrySize;
+  if (compression === 3 && headerSize >= 40) paletteSize += 12;
+  const pixelOffset = 14 + headerSize + paletteSize;
+  if (pixelOffset > 14 + dibBytes.length) return null;
+
+  const bmpHeader = createBitmapFileHeader(pixelOffset, 14 + dibBytes.length);
+  const out = new Uint8Array(14 + dibBytes.length);
+  out.set(bmpHeader, 0);
+  out.set(dibBytes, 14);
+  return out;
+}
+
+function extractBlipPayload(bytes: Uint8Array, offset: number, header: OfficeArtRecordHeader): PictureCandidate | null {
+  const payloadOffset = offset + 8;
+  const uidCount = (header.recInstance & 0x1) === 1 ? 2 : 1;
+  const uidBytes = uidCount * 16;
+  const atom = bytes.subarray(payloadOffset, payloadOffset + header.recLen);
+
+  if (header.recType === OFFICEART_BLIP_PNG || header.recType === OFFICEART_BLIP_JPEG || header.recType === OFFICEART_BLIP_JPEG_ALT || header.recType === OFFICEART_BLIP_DIB || header.recType === OFFICEART_BLIP_TIFF) {
+    const infoSize = uidBytes + 1;
+    if (atom.length < infoSize) return null;
+    let mime = 'application/octet-stream';
+    let payload = atom.subarray(infoSize);
+    if (header.recType === OFFICEART_BLIP_PNG) mime = 'image/png';
+    else if (header.recType === OFFICEART_BLIP_JPEG || header.recType === OFFICEART_BLIP_JPEG_ALT) mime = 'image/jpeg';
+    else if (header.recType === OFFICEART_BLIP_TIFF) mime = 'image/tiff';
+    else if (header.recType === OFFICEART_BLIP_DIB) {
+      const bmp = dibToBmp(payload);
+      if (bmp) {
+        payload = bmp;
+        mime = 'image/bmp';
+      } else {
+        mime = 'image/dib';
+      }
+    }
+    return {
+      mime,
+      bytes: payload,
+      displayable: isBrowserDisplayableMime(mime),
+      kind: 'officeArt',
+      meta: { recType: header.recType, recInstance: header.recInstance },
+    };
+  }
+
+  if (header.recType === OFFICEART_BLIP_EMF || header.recType === OFFICEART_BLIP_WMF || header.recType === OFFICEART_BLIP_PICT) {
+    const infoSize = uidBytes + 34;
+    if (atom.length < infoSize) return null;
+    const payload = atom.subarray(infoSize);
+    const mime = header.recType === OFFICEART_BLIP_EMF ? 'image/emf' : header.recType === OFFICEART_BLIP_WMF ? 'image/wmf' : 'image/pict';
+    return {
+      mime,
+      bytes: payload,
+      displayable: isBrowserDisplayableMime(mime),
+      kind: 'officeArt',
+      meta: { recType: header.recType, recInstance: header.recInstance },
+    };
+  }
+
+  return null;
+}
+
+function collectOfficeArtCandidates(bytes: Uint8Array, offset: number, end: number, out: PictureCandidate[]): void {
+  let cursor = offset;
+  while (cursor + 8 <= end) {
+    const header = parseOfficeArtRecordHeader(bytes, cursor);
+    if (!header) break;
+    const next = cursor + header.size;
+    if (next > end) break;
+    if (header.recVer === OFFICEART_CONTAINER) {
+      collectOfficeArtCandidates(bytes, cursor + 8, next, out);
+    } else {
+      const candidate = extractBlipPayload(bytes, cursor, header);
+      if (candidate) out.push(candidate);
+    }
+    cursor = next;
+  }
+}
+
+/**
+ * The `picture` field of PICFAndOfficeArtData is an OfficeArtInlineSpContainer.
+ * We recursively walk nested OfficeArt containers until we reach actual BLIP atoms
+ * (PNG/JPEG/DIB/TIFF/EMF/WMF/PICT) and then extract the payload according to the
+ * BLIP record-specific layout from MS-ODRAW.
+ */
+function findOfficeArtCandidates(pictureChunk: Uint8Array, startOffset: number): PictureCandidate[] {
+  if (startOffset < 0 || startOffset + 8 > pictureChunk.length) return [];
+  const directHeader = parseOfficeArtRecordHeader(pictureChunk, startOffset);
+  if (!directHeader) return [];
+  const candidates: PictureCandidate[] = [];
+  collectOfficeArtCandidates(pictureChunk, startOffset, Math.min(startOffset + directHeader.size, pictureChunk.length), candidates);
+  return candidates;
+}
+
+function rankPictureCandidate(candidate: PictureCandidate): number {
+  switch (candidate.mime) {
+    case 'image/png': return 100;
+    case 'image/jpeg': return 90;
+    case 'image/gif': return 80;
+    case 'image/bmp': return 70;
+    case 'image/tiff': return 60;
+    case 'image/svg+xml': return 50;
+    case 'image/emf': return 40;
+    case 'image/wmf': return 30;
+    case 'image/pict': return 20;
+    default: return 0;
+  }
+}
+
+function pickBestPictureCandidate(candidates: PictureCandidate[]): PictureCandidate | null {
+  let best: PictureCandidate | null = null;
+  for (const candidate of candidates) {
+    if (!best || rankPictureCandidate(candidate) > rankPictureCandidate(best)) best = candidate;
+  }
+  return best;
+}
+
+function createImageAsset(candidate: PictureCandidate, pictureOffset: number, picf: PicfHeader, linkedPath?: string): ImageAsset {
+  return {
+    id: uniqueId('asset-img'),
+    type: 'image',
+    mime: candidate.mime,
+    bytes: candidate.bytes,
+    dataUrl: candidate.sourceUrl ? '' : dataUrlFromBytes(candidate.bytes, candidate.mime),
+    sourceUrl: candidate.sourceUrl,
+    displayable: candidate.displayable,
+    meta: {
+      pictureOffset,
+      lcb: picf.lcb,
+      cbHeader: picf.cbHeader,
+      mm: picf.mm,
+      xExt: picf.xExt,
+      yExt: picf.yExt,
+      linkedPath,
+      ...(candidate.meta || {}),
+    },
+  };
+}
+
+/**
+ * Resolves a picture character (U+0001 + sprmCPicLocation) to an HTML-friendly asset.
+ * The happy path is: PICF -> optional linked picture name -> OfficeArtInlineSpContainer
+ * -> OfficeArtBlip*. When no structured BLIP can be found we still fall back to a
+ * signature scan so slightly malformed files remain usable.
+ */
 export function extractPictureAsset(
   dataStreamBytes: Uint8Array,
   pictureOffset: number | null | undefined,
   options: MsDocParseOptions = {},
 ): ImageAsset | null {
-  if (!dataStreamBytes || pictureOffset == null || pictureOffset < 0 || pictureOffset + 68 > dataStreamBytes.length) return null;
+  if (!dataStreamBytes || pictureOffset == null || pictureOffset < 0 || pictureOffset + PICF_HEADER_SIZE > dataStreamBytes.length) return null;
+
   const reader = new BinaryReader(dataStreamBytes);
   const lcb = reader.i32(pictureOffset);
-  const cbHeader = reader.u16(pictureOffset + 4);
   const total = lcb > 0 && pictureOffset + lcb <= dataStreamBytes.length
     ? lcb
-    : Math.min(dataStreamBytes.length - pictureOffset, (options.maxPictureBytes as number | undefined) || 8 * 1024 * 1024);
+    : Math.min(dataStreamBytes.length - pictureOffset, (options.maxPictureBytes as number | undefined) || DEFAULT_MAX_PICTURE_BYTES);
   const pictureChunk = dataStreamBytes.subarray(pictureOffset, pictureOffset + total);
-  const bodyStart = Math.min(cbHeader || 68, pictureChunk.length);
+  const picf = parsePicfHeader(pictureChunk);
+  if (!picf) return null;
+
+  let pictureDataOffset = Math.min(picf.cbHeader || PICF_HEADER_SIZE, pictureChunk.length);
+  const pictureName = readOptionalPictureName(pictureChunk, picf);
+  const linkedPath = pictureName?.value;
+  if (pictureName) pictureDataOffset = pictureName.nextOffset;
+
+  const officeArtCandidates = findOfficeArtCandidates(pictureChunk, pictureDataOffset);
+  const officeArtCandidate = pickBestPictureCandidate(officeArtCandidates);
+  if (officeArtCandidate) {
+    return createImageAsset(officeArtCandidate, pictureOffset, picf, linkedPath);
+  }
+
+  if (linkedPath) {
+    const mime = detectMimeFromPath(linkedPath) || 'application/octet-stream';
+    const isLocalFileReference = /^file:/i.test(linkedPath) || /^(?:\\\\|[a-zA-Z]:[\\/]|\/)/.test(linkedPath);
+    const linkedCandidate: PictureCandidate = {
+      mime,
+      bytes: new Uint8Array(0),
+      sourceUrl: linkedPath,
+      displayable: isBrowserDisplayableMime(mime) && !isLocalFileReference,
+      kind: 'linked',
+      meta: { linkedPath },
+    };
+    return createImageAsset(linkedCandidate, pictureOffset, picf, linkedPath);
+  }
+
+  const bodyStart = Math.min(picf.cbHeader || PICF_HEADER_SIZE, pictureChunk.length);
   const segment = detectImageSegment(pictureChunk.subarray(bodyStart));
   if (!segment) {
     return {
@@ -99,9 +442,11 @@ export function extractPictureAsset(
       mime: 'application/octet-stream',
       bytes: pictureChunk,
       dataUrl: dataUrlFromBytes(pictureChunk, 'application/octet-stream'),
-      meta: { pictureOffset, lcb, cbHeader },
+      displayable: false,
+      meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm },
     };
   }
+
   const start = bodyStart + segment.start;
   const end = Math.min(bodyStart + segment.end, pictureChunk.length);
   const imageBytes = pictureChunk.subarray(start, end);
@@ -111,7 +456,8 @@ export function extractPictureAsset(
     mime: segment.mime,
     bytes: imageBytes,
     dataUrl: dataUrlFromBytes(imageBytes, segment.mime),
-    meta: { pictureOffset, lcb, cbHeader },
+    displayable: isBrowserDisplayableMime(segment.mime),
+    meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm },
   };
 }
 

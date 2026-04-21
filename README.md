@@ -26,7 +26,8 @@
 - 常见字符样式：粗体、斜体、下划线、删除线、字号、颜色、高亮、大小写、上下标、字体切换
 - 常见段落样式：对齐、缩进、段前后距、行距、分页控制、边框
 - 表格：`sprmTDefTable`、单元格宽度、横向/纵向合并、边框、垂直对齐、nowrap、fitText
-- 图片：PICF + Data 流提取
+- 图片：按 `PICFAndOfficeArtData` / `PICF` / `OfficeArtInlineSpContainer` / `OfficeArtBlip*` 解析，优先提取浏览器可直接显示的 PNG/JPEG/BMP 等位图
+- 链接图片：识别 `stPicName` / 外链目标，无法内嵌的本地 `file://` 图片会以回退占位展示，而不是输出损坏的 `<img>`
 - OLE / ObjectPool 附件提取
 - 域代码的基础处理（例如超链接）
 - 浏览器 Viewer 与 Worker Client
@@ -47,7 +48,7 @@ src/
     properties.ts    # PAPX / CHPX / TAPX 到状态对象的归并
     styles.ts        # STSH / 样式继承
     fonts.ts         # 字体表
-    objects.ts       # 图片 / OLE / ObjectPool
+    objects.ts       # 图片 / OfficeArt / OLE / ObjectPool
     parser.ts        # 主解析流程，输出 AST
   render/
     html.ts          # AST -> HTML/CSS
@@ -200,6 +201,20 @@ import type {
 - 也可以在现有渲染器之外实现 Markdown、Canvas、PDF 等输出层
 - Worker 主线程通信协议也有完整类型约束，避免“隐式 any 消息格式”问题
 
+
+## 图片解析说明
+
+当前图片链路不再依赖“从 Data 流里扫 PNG/JPEG 魔数”这种脆弱策略，而是按规范做结构化解析：
+
+- 通过字符属性里的 `sprmCPicLocation` 找到 Data 流偏移
+- 按 `PICFAndOfficeArtData` 读取 `PICF` 头和可选的 `stPicName`
+- 递归遍历 `OfficeArtInlineSpContainer` / `OfficeArt` 记录头
+- 命中 `OfficeArtBlipPNG`、`OfficeArtBlipJPEG`、`OfficeArtBlipDIB`、`OfficeArtBlipTIFF` 等 BLIP 记录后，按各自记录布局提取真正的图片负载
+- 对 DIB 自动转成浏览器可显示的 BMP
+- 对只包含本地外链路径而不包含实际位图数据的图片，保留链接元数据并渲染为回退占位，避免错误地输出损坏图片
+
+这一步专门修复了旧实现里“把 OfficeArt 容器里的非图片字节误判成 EMF，导致图片无法显示”的问题。
+
 ## 严格类型与可维护性说明
 
 这次重构的重点不只是把文件后缀改成 `.ts`，而是把整条主链路都显式类型化：
@@ -226,8 +241,9 @@ npm run smoke
 这个命令会：
 
 1. 先运行 TypeScript 构建
-2. 再读取 `test/test.doc`
-3. 输出 `test/rendered-sample.html`
+2. 读取 `test/test.doc` 与 `test/fixtures/image-embedded.doc`
+3. 验证图片 fixture 是否被解析成可直接渲染的 PNG/JPEG
+4. 输出 `test/rendered-sample.html` 与 `test/rendered-image-sample.html`
 
 如果你要手工打开 demo：
 
@@ -241,6 +257,7 @@ npm run build
 MS-DOC 是历史包袱很重的二进制格式，虽然主链路已经完整重构，但以下场景仍建议用更多真实样本持续压测：
 
 - 极端复杂的嵌套表格
+- 仅提供 EMF / WMF / PICT 且不带可直接显示位图回退的历史文档（此类文件已能被正确识别，但浏览器原生并不擅长直接显示这些矢量格式）
 - 旧版 OfficeArt / shape 对象
 - 非常规域代码组合
 - 少见的 OLE 嵌入形式
