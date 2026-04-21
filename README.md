@@ -29,6 +29,9 @@
 - 常见段落样式：对齐、缩进、段前后距、行距、分页控制、边框
 - 表格：`sprmTDefTable`、单元格宽度、横向/纵向合并、边框、垂直对齐、nowrap、fitText
 - 图片：按 `PICFAndOfficeArtData` / `PICF` / `OfficeArtInlineSpContainer` / `OfficeArtBStoreContainerFileBlock` / `OfficeArtFBSE` / `OfficeArtBlip*` 解析，优先提取浏览器可直接显示的 PNG/JPEG/BMP 等位图
+- 多 story 内容：主文档、脚注、尾注、批注、页眉页脚、textbox、header textbox
+- 行内引用：脚注/尾注引用、批注引用、复杂域嵌套、修订插入/删除标记
+- 矢量图：对常见 `EMF` / `WMF` 形状记录做纯前端 SVG 转换，浏览器可直接显示
 - 链接图片：识别 `stPicName` / 外链目标，无法内嵌的本地 `file://` 图片会以非点击型回退占位展示，而不是输出损坏的 `<img>` 或不可用链接
 - OLE / ObjectPool 附件提取
 - 域代码的基础处理（例如超链接、`INCLUDEPICTURE` 外链图片）
@@ -142,7 +145,7 @@ import type { MsDocParseResult } from 'msdoc-viewer';
 - `meta`: 文档元数据与统计
 - `fonts`: 字体表摘要
 - `styles`: 样式表摘要
-- `blocks`: 结构化块级 AST（段落、表格、附件）
+- `blocks`: 结构化块级 AST（段落、表格、脚注/尾注、批注、页眉页脚、textbox、附件）
 - `assets`: 图片 / 附件资产
 
 ### `renderMsDoc(parsed, options?)`
@@ -159,6 +162,12 @@ import type { MsDocParseResult } from 'msdoc-viewer';
 ### `parseMsDocToHtml(input, options?)`
 
 一步完成解析与渲染。
+
+### `convertMetafileToSvg(mime, bytes)`
+
+低层辅助函数，用于把常见 `EMF` / `WMF` 字节流转换成 SVG。
+
+适合在你自己实现自定义图片策略、调试 OfficeArt 资产，或者单独处理历史矢量图时使用。
 
 ### `createMsDocViewer(container, config?)`
 
@@ -202,6 +211,7 @@ import type {
 - 社区开发者可以直接消费 `AST` 与 `asset` 数据自行渲染
 - 也可以在现有渲染器之外实现 Markdown、Canvas、PDF 等输出层
 - Worker 主线程通信协议也有完整类型约束，避免“隐式 any 消息格式”问题
+- 多 story 结果、修订标记、批注/脚注引用节点也都有独立类型，可按需自定义渲染
 
 
 ## 图片解析说明
@@ -217,6 +227,8 @@ import type {
 - 对只包含本地外链路径而不包含实际位图数据的图片，保留链接元数据并渲染为回退占位，避免错误地输出损坏图片
 
 这一步专门修复了旧实现里“把 OfficeArt 容器里的非图片字节误判成 EMF，导致图片无法显示”的问题。
+
+对于真正的矢量图（尤其是 `OfficeArtBlipEMF` / `OfficeArtBlipWMF`），库会优先把可直接读取的 EMF/WMF 记录转换成 SVG，再交给浏览器渲染；如果遇到压缩 metafile 或暂未覆盖的记录类型，则会保留原始元数据并以非浏览器直显资源处理。
 
 ## 严格类型与可维护性说明
 
@@ -257,9 +269,11 @@ npm run smoke
 1. 先运行 TypeScript 构建
 2. 读取 `test/test.doc`、`test/fixtures/image-embedded.doc`、`test/fixtures/image-linked.doc`
 3. 验证嵌入图片 fixture 是否被解析成可直接渲染的 PNG/JPEG
-4. 验证本地外链图片不会生成 `file://` 可点击链接
-5. 验证渲染层会清理 `javascript:` 等不安全链接，并避免嵌套 `<a>`
-6. 输出 `test/rendered-sample.html` 与 `test/rendered-image-sample.html`
+4. 验证 `WMF` / `EMF` 会被转换为 SVG
+5. 验证 story helper（story window / 批注引用元数据）
+6. 验证本地外链图片不会生成 `file://` 可点击链接
+7. 验证渲染层会清理 `javascript:` 等不安全链接，并避免嵌套 `<a>`
+8. 输出 `test/rendered-sample.html` 与 `test/rendered-image-sample.html`
 
 如果你要手工打开 demo：
 
@@ -273,8 +287,9 @@ npm run build
 MS-DOC 是历史包袱很重的二进制格式，虽然主链路已经完整重构，但以下场景仍建议用更多真实样本持续压测：
 
 - 极端复杂的嵌套表格
-- 仅提供 EMF / WMF / PICT 且不带可直接显示位图回退的历史文档（此类文件已能被正确识别，但浏览器原生并不擅长直接显示这些矢量格式）
-- 旧版 OfficeArt / shape 对象
+- 压缩的 EMF / WMF metafile BLIP（当前已支持直接读取的常见 EMF/WMF 记录到 SVG，但未内置通用 deflate 解压器）
+- 复杂 OfficeArt shape / textbox 的高级几何与文本环绕
+- 修订/批注/页眉页脚在极少数兼容模式文档中的边角差异
 - 非常规域代码组合
 - 少见的 OLE 嵌入形式
 - 某些兼容模式下的边角 sprm 变体

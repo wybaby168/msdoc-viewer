@@ -7,6 +7,15 @@ import { readChpxRuns, readPapxRuns, type ChpxRun, type PapxRun } from './fkp.js
 import { parseFonts } from './fonts.js';
 import { extractObjectPool, extractPictureAsset } from './objects.js';
 import {
+  buildHeaderStoryDescriptors,
+  buildStoryWindows,
+  parseCommentRefMeta,
+  parseSttbfRMark,
+  parseTextboxMeta,
+  parseXstArray,
+  readFixedPlc,
+} from './stories.js';
+import {
   applyTableStateToCells,
   charPropsToState,
   getTableDepth,
@@ -18,15 +27,21 @@ import type {
   AttachmentAsset,
   CharSegment,
   CharState,
+  CommentItem,
+  CommentsBlock,
   DecodedProperty,
   FieldInstruction,
   FontInfo,
   FontsCollection,
+  HeaderFooterStory,
+  HeadersBlock,
   ImageAsset,
   InlineNode,
   MsDocAsset,
   MsDocParseOptions,
   MsDocParseResult,
+  NoteItem,
+  NotesBlock,
   ObjectPoolInfo,
   ParagraphBlock,
   ParagraphModel,
@@ -36,6 +51,8 @@ import type {
   TableBlock,
   TableCellBlock,
   TableRowBlock,
+  TextboxItem,
+  TextboxesBlock,
 } from '../types.js';
 
 function getOverlappingRuns<T extends { cpStart: number; cpEnd: number }>(
@@ -143,6 +160,30 @@ interface FieldFrame {
   resultStyle?: CharState;
 }
 
+
+interface NoteReferenceInfo {
+  kind: 'footnote' | 'endnote';
+  id: string;
+  label: string;
+}
+
+interface CommentReferenceInfo {
+  id: string;
+  label: string;
+  author?: string;
+}
+
+interface InlineBuildContext {
+  noteRefs?: Map<number, NoteReferenceInfo>;
+  commentRefs?: Map<number, CommentReferenceInfo>;
+}
+
+interface ParsedStoryContent {
+  paragraphs: ParagraphModel[];
+  blocks: Array<ParagraphBlock | TableBlock>;
+  text: string;
+}
+
 function emitInline(targetStack: FieldFrame[], output: InlineNode[], node: InlineNode | null | undefined): void {
   if (!node) return;
   const target = targetStack.length ? targetStack[targetStack.length - 1]!.nodes : output;
@@ -214,20 +255,60 @@ function normalizePlainTextChar(ch: string): string {
     case DOC_CONTROL.nonRequiredHyphen:
       return '';
     case DOC_CONTROL.annotationRef:
+    case '':
       return '';
     default:
       return ch;
   }
 }
 
-function buildInlineNodes(segments: CharSegment[], resolveAsset: (charState: CharState) => MsDocAsset | null): InlineNode[] {
+function inlineNodesToPlainText(nodes: InlineNode[]): string {
+  return nodes.map((node) => {
+    if (node.type === 'text') return node.text;
+    if (node.type === 'lineBreak' || node.type === 'pageBreak') return '\n';
+    if (node.type === 'noteRef' || node.type === 'commentRef') return node.label;
+    return '';
+  }).join('');
+}
+
+function buildInlineNodes(
+  segments: CharSegment[],
+  resolveAsset: (charState: CharState) => MsDocAsset | null,
+  context: InlineBuildContext = {},
+): InlineNode[] {
   const output: InlineNode[] = [];
   const fieldStack: FieldFrame[] = [];
 
   for (const segment of segments) {
     if (!segment.text || segment.state.hidden) continue;
+    let cp = segment.cpStart;
     for (const rawCh of segment.text) {
+      const noteRef = context.noteRefs?.get(cp);
+      if (noteRef) {
+        emitInline(fieldStack, output, {
+          type: 'noteRef',
+          noteType: noteRef.kind,
+          refId: noteRef.id,
+          label: noteRef.label,
+        });
+        cp += 1;
+        continue;
+      }
+      const commentRef = context.commentRefs?.get(cp);
+      if (commentRef) {
+        emitInline(fieldStack, output, {
+          type: 'commentRef',
+          commentId: commentRef.id,
+          label: commentRef.label,
+          author: commentRef.author,
+        });
+        cp += 1;
+        continue;
+      }
+
       const ch = normalizePlainTextChar(rawCh);
+      cp += 1;
+      if (!ch) continue;
 
       if (ch === DOC_CONTROL.fieldStart) {
         fieldStack.push({ instruction: '', parsed: null, readingInstruction: true, nodes: [], resultStyle: segment.state });
@@ -259,7 +340,12 @@ function buildInlineNodes(segments: CharSegment[], resolveAsset: (charState: Cha
             return { ...node, href } as InlineNode;
           });
         }
-        for (const node of nodes) emitInline(fieldStack, output, node);
+        const parentField = fieldStack[fieldStack.length - 1];
+        if (parentField?.readingInstruction) {
+          parentField.instruction += inlineNodesToPlainText(nodes);
+        } else {
+          for (const node of nodes) emitInline(fieldStack, output, node);
+        }
         continue;
       }
 
@@ -298,6 +384,11 @@ function buildInlineNodes(segments: CharSegment[], resolveAsset: (charState: Cha
 
   while (fieldStack.length) {
     const current = fieldStack.pop()!;
+    const parentField = fieldStack[fieldStack.length - 1];
+    if (parentField?.readingInstruction) {
+      parentField.instruction += current.instruction + inlineNodesToPlainText(current.nodes);
+      continue;
+    }
     for (const node of current.nodes) emitInline(fieldStack, output, node);
   }
 
@@ -312,6 +403,7 @@ function buildCharSegments(
   baseCharProps: DecodedProperty[],
   resolveFont: (fontId: number | undefined) => FontInfo | null,
   cursorRef: { index: number },
+  revisionAuthors: string[] = [],
 ): CharSegment[] {
   const overlaps = getOverlappingRuns(chpxRuns, range.cpStart, range.cpEnd, cursorRef);
   const boundaries = new Set<number>([range.cpStart, range.cpEnd]);
@@ -332,6 +424,9 @@ function buildCharSegments(
     const charStyleProps = directState.charStyleId != null ? styles.resolveStyle(directState.charStyleId).charProps : [];
     const finalProps = mergePropertyArrays(baseCharProps, charStyleProps, directProps);
     const state = charPropsToState(finalProps);
+    if (state.revisionAuthorIndex != null && revisionAuthors[state.revisionAuthorIndex]) {
+      state.revisionAuthor = revisionAuthors[state.revisionAuthorIndex];
+    }
     const font = resolveFont(state.fontFamilyId);
     if (font) state.fontFamily = font.name || font.altName || undefined;
     const localStart = cpStart - range.cpStart;
@@ -349,6 +444,9 @@ function buildCharSegments(
 
   if (!segments.length && paragraphText) {
     const state = charPropsToState(baseCharProps);
+    if (state.revisionAuthorIndex != null && revisionAuthors[state.revisionAuthorIndex]) {
+      state.revisionAuthor = revisionAuthors[state.revisionAuthorIndex];
+    }
     const font = resolveFont(state.fontFamilyId);
     if (font) state.fontFamily = font.name || font.altName || undefined;
     segments.push({ cpStart: range.cpStart, cpEnd: range.cpEnd, text: paragraphText, state });
@@ -365,6 +463,8 @@ function buildParagraphModel(
   chpxRuns: ChpxRun[],
   resolveAsset: (charState: CharState) => MsDocAsset | null,
   chpxCursor: { index: number },
+  revisionAuthors: string[] = [],
+  inlineContext: InlineBuildContext = {},
 ): ParagraphModel {
   const directSplit = splitPropertiesByKind(range.properties || []);
   const paraStyleId = range.styleId || (directSplit.para.find((item) => item.name === 'styleId')?.value as number | undefined) || 0;
@@ -379,8 +479,8 @@ function buildParagraphModel(
 
   const baseCharProps = paraStyle.charProps;
   const resolveFont = (fontId: number | undefined) => fonts.byIndex(fontId);
-  const segments = buildCharSegments(range, paragraphText, chpxRuns, styles, baseCharProps, resolveFont, chpxCursor);
-  const inlines = buildInlineNodes(segments, resolveAsset);
+  const segments = buildCharSegments(range, paragraphText, chpxRuns, styles, baseCharProps, resolveFont, chpxCursor, revisionAuthors);
+  const inlines = buildInlineNodes(segments, resolveAsset, inlineContext);
 
   return {
     id: uniqueId('para'),
@@ -397,6 +497,109 @@ function buildParagraphModel(
     tableState,
     segments,
     inlines,
+  };
+}
+
+function buildRangesForCpInterval(
+  cpStart: number,
+  cpEnd: number,
+  documentText: string,
+  papxRuns: PapxRun[],
+): ParagraphRange[] {
+  if (cpEnd <= cpStart) return [];
+  const rangesFromPapx = papxRuns
+    .filter((run) => run.cpStart < cpEnd && run.cpEnd > cpStart)
+    .map((run) => ({
+      cpStart: Math.max(cpStart, run.cpStart),
+      cpEnd: Math.min(cpEnd, run.cpEnd),
+      terminator: documentText[Math.min(cpEnd, run.cpEnd) - 1] || '',
+      styleId: run.styleId,
+      properties: run.properties,
+    }))
+    .filter((range) => range.cpEnd > range.cpStart);
+
+  if (rangesFromPapx.length) return rangesFromPapx;
+
+  return splitParagraphRanges(documentText.slice(cpStart, cpEnd)).map((range) => ({
+    cpStart: cpStart + range.cpStart,
+    cpEnd: cpStart + range.cpEnd,
+    terminator: range.terminator,
+    styleId: 0,
+    properties: [],
+  }));
+}
+
+function buildParagraphModelsForInterval(
+  cpStart: number,
+  cpEnd: number,
+  documentText: string,
+  wordBytes: Uint8Array,
+  clx: ReturnType<typeof parseClx>,
+  pieceTexts: string[],
+  styles: StyleCollection,
+  fonts: FontsCollection,
+  papxRuns: PapxRun[],
+  chpxRuns: ChpxRun[],
+  resolveAsset: (charState: CharState) => MsDocAsset | null,
+  revisionAuthors: string[] = [],
+  inlineContext: InlineBuildContext = {},
+): ParagraphModel[] {
+  const ranges = buildRangesForCpInterval(cpStart, cpEnd, documentText, papxRuns);
+  const chpxCursor = { index: 0 };
+  return ranges.map((range) => {
+    const rawParagraphText = getTextByCp(wordBytes, clx, pieceTexts, range.cpStart, range.cpEnd);
+    const terminatorCandidate = range.terminator === DOC_CONTROL.paragraph || range.terminator === DOC_CONTROL.cellMark ? range.terminator : '';
+    const paragraphText = terminatorCandidate && rawParagraphText.endsWith(terminatorCandidate)
+      ? rawParagraphText.slice(0, -1)
+      : rawParagraphText;
+    return buildParagraphModel(
+      { ...range, terminator: terminatorCandidate },
+      paragraphText,
+      styles,
+      fonts,
+      chpxRuns,
+      resolveAsset,
+      chpxCursor,
+      revisionAuthors,
+      inlineContext,
+    );
+  });
+}
+
+function parseIntervalToContent(
+  cpStart: number,
+  cpEnd: number,
+  documentText: string,
+  wordBytes: Uint8Array,
+  clx: ReturnType<typeof parseClx>,
+  pieceTexts: string[],
+  styles: StyleCollection,
+  fonts: FontsCollection,
+  papxRuns: PapxRun[],
+  chpxRuns: ChpxRun[],
+  resolveAsset: (charState: CharState) => MsDocAsset | null,
+  revisionAuthors: string[] = [],
+  inlineContext: InlineBuildContext = {},
+): ParsedStoryContent {
+  const paragraphs = buildParagraphModelsForInterval(
+    cpStart,
+    cpEnd,
+    documentText,
+    wordBytes,
+    clx,
+    pieceTexts,
+    styles,
+    fonts,
+    papxRuns,
+    chpxRuns,
+    resolveAsset,
+    revisionAuthors,
+    inlineContext,
+  );
+  return {
+    paragraphs,
+    blocks: buildBlocks(paragraphs),
+    text: paragraphs.map((paragraph) => paragraph.text).filter(Boolean).join('\n'),
   };
 }
 
@@ -531,8 +734,8 @@ function buildTableBlock(tableParagraphs: ParagraphModel[]): TableBlock {
   };
 }
 
-function buildBlocks(paragraphs: ParagraphModel[]): MsDocParseResult['blocks'] {
-  const blocks: MsDocParseResult['blocks'] = [];
+function buildBlocks(paragraphs: ParagraphModel[]): Array<ParagraphBlock | TableBlock> {
+  const blocks: Array<ParagraphBlock | TableBlock> = [];
   let index = 0;
   while (index < paragraphs.length) {
     const paragraph = paragraphs[index]!;
@@ -575,6 +778,134 @@ function collectAssetWarnings(assets: MsDocAsset[], warnings: MsDocParseResult['
   }
 }
 
+function buildNoteItems(
+  kind: 'footnote' | 'endnote',
+  storyCpBase: number,
+  textEntries: Array<{ index: number; cpStart: number; cpEnd: number }>,
+  refEntries: Array<{ index: number; cpStart: number }>,
+  parseContent: (cpStart: number, cpEnd: number, context?: InlineBuildContext) => ParsedStoryContent,
+): { items: NoteItem[]; refMap: Map<number, NoteReferenceInfo> } {
+  const items: NoteItem[] = [];
+  const refMap = new Map<number, NoteReferenceInfo>();
+  for (let i = 0; i < textEntries.length; i += 1) {
+    const entry = textEntries[i]!;
+    if (entry.cpEnd <= entry.cpStart) continue;
+    const id = uniqueId(kind);
+    const label = String(i + 1);
+    const refCp = refEntries[i]?.cpStart;
+    if (refCp != null) refMap.set(refCp, { kind, id, label });
+    const content = parseContent(storyCpBase + entry.cpStart, storyCpBase + entry.cpEnd);
+    items.push({
+      id,
+      kind,
+      index: i,
+      label,
+      refCp,
+      blocks: content.blocks,
+      text: content.text,
+    });
+  }
+  return { items, refMap };
+}
+
+function buildCommentItems(
+  storyCpBase: number,
+  textEntries: Array<{ index: number; cpStart: number; cpEnd: number }>,
+  refEntries: Array<{ index: number; cpStart: number; data: Uint8Array }>,
+  commentAuthors: string[],
+  revisionAuthors: string[],
+  parseContent: (cpStart: number, cpEnd: number, context?: InlineBuildContext) => ParsedStoryContent,
+): { items: CommentItem[]; refMap: Map<number, CommentReferenceInfo> } {
+  const items: CommentItem[] = [];
+  const refMap = new Map<number, CommentReferenceInfo>();
+  for (let i = 0; i < textEntries.length; i += 1) {
+    const entry = textEntries[i]!;
+    if (entry.cpEnd <= entry.cpStart) continue;
+    const meta = parseCommentRefMeta(refEntries[i]?.data || new Uint8Array(0));
+    const author = commentAuthors[meta.authorIndex] || revisionAuthors[meta.authorIndex] || meta.initials || undefined;
+    const id = uniqueId('comment');
+    const label = String(i + 1);
+    const refCp = refEntries[i]?.cpStart;
+    if (refCp != null) refMap.set(refCp, { id, label, author });
+    const content = parseContent(storyCpBase + entry.cpStart, storyCpBase + entry.cpEnd);
+    items.push({
+      id,
+      index: i,
+      label,
+      refCp,
+      author,
+      initials: meta.initials || undefined,
+      bookmarkId: meta.bookmarkId,
+      blocks: content.blocks,
+      text: content.text,
+    });
+  }
+  return { items, refMap };
+}
+
+function buildTextboxItems(
+  header: boolean,
+  storyCpBase: number,
+  entries: Array<{ index: number; cpStart: number; cpEnd: number; data: Uint8Array }>,
+  parseContent: (cpStart: number, cpEnd: number, context?: InlineBuildContext) => ParsedStoryContent,
+): TextboxItem[] {
+  const items: TextboxItem[] = [];
+  for (const entry of entries) {
+    const meta = parseTextboxMeta(entry.data);
+    const content = entry.cpEnd > entry.cpStart
+      ? parseContent(storyCpBase + entry.cpStart, storyCpBase + entry.cpEnd)
+      : { paragraphs: [], blocks: [], text: '' };
+    if (!content.blocks.length && !content.text && meta.reusable) continue;
+    items.push({
+      id: uniqueId(header ? 'hdr-textbox' : 'textbox'),
+      index: entry.index,
+      label: `${header ? 'Header textbox' : 'Textbox'} ${entry.index + 1}`,
+      header,
+      reusable: meta.reusable,
+      shapeId: meta.shapeId || undefined,
+      blocks: content.blocks,
+      text: content.text,
+    });
+  }
+  return items;
+}
+
+function buildHeaderStories(
+  descriptors: ReturnType<typeof buildHeaderStoryDescriptors>,
+  parseContent: (cpStart: number, cpEnd: number, context?: InlineBuildContext) => ParsedStoryContent,
+): HeaderFooterStory[] {
+  const stories: HeaderFooterStory[] = [];
+  const latestByRole = new Map<string, HeaderFooterStory>();
+  for (const descriptor of descriptors) {
+    let blocks: HeaderFooterStory['blocks'] = [];
+    let text = '';
+    if (descriptor.cpEnd > descriptor.cpStart) {
+      const content = parseContent(descriptor.cpStart, descriptor.cpEnd);
+      blocks = content.blocks;
+      text = content.text;
+    } else if (descriptor.inheritedFromSection != null) {
+      const inherited = latestByRole.get(descriptor.role);
+      if (inherited) {
+        blocks = inherited.blocks;
+        text = inherited.text;
+      }
+    }
+    if (!blocks.length && !text) continue;
+    const story: HeaderFooterStory = {
+      id: uniqueId('header-story'),
+      role: descriptor.role,
+      roleLabel: descriptor.roleLabel,
+      sectionIndex: descriptor.sectionIndex,
+      inheritedFromSection: descriptor.inheritedFromSection,
+      blocks,
+      text,
+    };
+    stories.push(story);
+    if (text || blocks.length) latestByRole.set(descriptor.role, story);
+  }
+  return stories;
+}
+
 /**
  * Main MS-DOC entry point.
  * It parses the OLE container, restores text through the piece table, resolves
@@ -604,42 +935,165 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
   const clx = parseClx(tableBytes, fib.fibRgFcLcb);
   const pieceTexts = buildPieceTextCache(wordBytes, clx);
   const documentText = pieceTexts.join('');
-  const mainStoryEnd = fib.fibRgLw.ccpText > 0 ? fib.fibRgLw.ccpText : documentText.length;
+  const storyWindows = buildStoryWindows(fib.fibRgLw, documentText.length);
 
   const styles = parseStyles(tableBytes, fib.fibRgFcLcb);
   const fonts = parseFonts(tableBytes, fib.fibRgFcLcb);
-  const chpxRuns = readChpxRuns(wordBytes, tableBytes, fib, clx).filter((run) => run.cpStart < mainStoryEnd);
+  const revisionAuthors = parseSttbfRMark(tableBytes, fib.fibRgFcLcb);
+  const commentAuthors = parseXstArray(tableBytes, fib.fibRgFcLcb);
+  const chpxRuns = readChpxRuns(wordBytes, tableBytes, fib, clx)
+    .filter((run) => run.cpStart < documentText.length)
+    .map((run) => ({ ...run, cpEnd: Math.min(run.cpEnd, documentText.length) }));
   const papxRuns = readPapxRuns(wordBytes, tableBytes, fib, clx)
-    .filter((run) => run.cpStart < mainStoryEnd)
-    .map((run) => ({ ...run, cpEnd: Math.min(run.cpEnd, mainStoryEnd) }));
-
-  const ranges: ParagraphRange[] = papxRuns.length
-    ? papxRuns.map((run) => ({
-        cpStart: run.cpStart,
-        cpEnd: run.cpEnd,
-        terminator: documentText[run.cpEnd - 1] || '',
-        styleId: run.styleId,
-        properties: run.properties,
-      }))
-    : splitParagraphRanges(documentText.slice(0, mainStoryEnd)).map((range) => ({ ...range, styleId: 0, properties: [] }));
+    .filter((run) => run.cpStart < documentText.length)
+    .map((run) => ({ ...run, cpEnd: Math.min(run.cpEnd, documentText.length) }));
 
   const objectPool = extractObjectPool(cfb);
   const assets: MsDocAsset[] = [];
   const usedAttachmentNames = new Set<string>();
   const assetCache = new Map<number, MsDocAsset | null>();
   const resolveAsset = createAssetResolver(dataBytes, objectPool, assets, usedAttachmentNames, assetCache, options);
-  const chpxCursor = { index: 0 };
 
-  const paragraphs = ranges.map((range) => {
-    const rawParagraphText = getTextByCp(wordBytes, clx, pieceTexts, range.cpStart, range.cpEnd);
-    const terminator = range.terminator === DOC_CONTROL.paragraph || range.terminator === DOC_CONTROL.cellMark ? range.terminator : '';
-    const paragraphText = terminator && rawParagraphText.endsWith(terminator)
-      ? rawParagraphText.slice(0, -1)
-      : rawParagraphText;
-    return buildParagraphModel({ ...range, terminator }, paragraphText, styles, fonts, chpxRuns, resolveAsset, chpxCursor);
+  const parseContent = (cpStart: number, cpEnd: number, inlineContext: InlineBuildContext = {}): ParsedStoryContent => parseIntervalToContent(
+    cpStart,
+    cpEnd,
+    documentText,
+    wordBytes,
+    clx,
+    pieceTexts,
+    styles,
+    fonts,
+    papxRuns,
+    chpxRuns,
+    resolveAsset,
+    revisionAuthors,
+    inlineContext,
+  );
+
+  const footnoteTextEntries = readFixedPlc(
+    tableBytes,
+    fib.fibRgFcLcb.fcPlcffndTxt as number | undefined,
+    fib.fibRgFcLcb.lcbPlcffndTxt as number | undefined,
+    0,
+  );
+  const footnoteRefEntries = readFixedPlc(
+    tableBytes,
+    fib.fibRgFcLcb.fcPlcffndRef as number | undefined,
+    fib.fibRgFcLcb.lcbPlcffndRef as number | undefined,
+    2,
+  ).map((entry) => ({ index: entry.index, cpStart: entry.cpStart }));
+  const { items: footnoteItems, refMap: footnoteRefMap } = buildNoteItems(
+    'footnote',
+    storyWindows.footnote.cpStart,
+    footnoteTextEntries,
+    footnoteRefEntries,
+    parseContent,
+  );
+
+  const endnoteTextEntries = readFixedPlc(
+    tableBytes,
+    fib.fibRgFcLcb.fcPlcfendTxt as number | undefined,
+    fib.fibRgFcLcb.lcbPlcfendTxt as number | undefined,
+    0,
+  );
+  const endnoteRefEntries = readFixedPlc(
+    tableBytes,
+    fib.fibRgFcLcb.fcPlcfendRef as number | undefined,
+    fib.fibRgFcLcb.lcbPlcfendRef as number | undefined,
+    2,
+  ).map((entry) => ({ index: entry.index, cpStart: entry.cpStart }));
+  const { items: endnoteItems, refMap: endnoteRefMap } = buildNoteItems(
+    'endnote',
+    storyWindows.endnote.cpStart,
+    endnoteTextEntries,
+    endnoteRefEntries,
+    parseContent,
+  );
+
+  const commentTextEntries = readFixedPlc(
+    tableBytes,
+    fib.fibRgFcLcb.fcPlcfandTxt as number | undefined,
+    fib.fibRgFcLcb.lcbPlcfandTxt as number | undefined,
+    0,
+  );
+  const commentRefEntries = readFixedPlc(
+    tableBytes,
+    fib.fibRgFcLcb.fcPlcfandRef as number | undefined,
+    fib.fibRgFcLcb.lcbPlcfandRef as number | undefined,
+    30,
+  );
+  const { items: commentItems, refMap: commentRefMap } = buildCommentItems(
+    storyWindows.comment.cpStart,
+    commentTextEntries,
+    commentRefEntries,
+    commentAuthors,
+    revisionAuthors,
+    parseContent,
+  );
+
+  const noteRefs = new Map<number, NoteReferenceInfo>();
+  for (const [cp, info] of footnoteRefMap.entries()) noteRefs.set(cp, info);
+  for (const [cp, info] of endnoteRefMap.entries()) noteRefs.set(cp, info);
+
+  const mainContent = parseContent(storyWindows.main.cpStart, storyWindows.main.cpEnd, {
+    noteRefs,
+    commentRefs: commentRefMap,
   });
 
-  const blocks = buildBlocks(paragraphs);
+  const headerStories = buildHeaderStories(
+    buildHeaderStoryDescriptors(tableBytes, fib.fibRgFcLcb, storyWindows.header),
+    parseContent,
+  );
+
+  const textboxItems = buildTextboxItems(
+    false,
+    storyWindows.textbox.cpStart,
+    readFixedPlc(
+      tableBytes,
+      fib.fibRgFcLcb.fcPlcftxbxTxt as number | undefined,
+      fib.fibRgFcLcb.lcbPlcftxbxTxt as number | undefined,
+      22,
+    ),
+    parseContent,
+  );
+  const headerTextboxItems = buildTextboxItems(
+    true,
+    storyWindows.headerTextbox.cpStart,
+    readFixedPlc(
+      tableBytes,
+      fib.fibRgFcLcb.fcPlcfHdrtxbxTxt as number | undefined,
+      fib.fibRgFcLcb.lcbPlcfHdrtxbxTxt as number | undefined,
+      22,
+    ),
+    parseContent,
+  );
+
+  const blocks: MsDocParseResult['blocks'] = [...mainContent.blocks];
+  if (footnoteItems.length) {
+    const footnotesBlock: NotesBlock = { type: 'notes', id: uniqueId('notes-footnote'), kind: 'footnote', items: footnoteItems };
+    blocks.push(footnotesBlock);
+  }
+  if (endnoteItems.length) {
+    const endnotesBlock: NotesBlock = { type: 'notes', id: uniqueId('notes-endnote'), kind: 'endnote', items: endnoteItems };
+    blocks.push(endnotesBlock);
+  }
+  if (commentItems.length) {
+    const commentsBlock: CommentsBlock = { type: 'comments', id: uniqueId('comments'), items: commentItems };
+    blocks.push(commentsBlock);
+  }
+  if (headerStories.length) {
+    const headersBlock: HeadersBlock = { type: 'headers', id: uniqueId('headers'), stories: headerStories };
+    blocks.push(headersBlock);
+  }
+  if (textboxItems.length) {
+    const textboxesBlock: TextboxesBlock = { type: 'textboxes', id: uniqueId('textboxes'), header: false, items: textboxItems };
+    blocks.push(textboxesBlock);
+  }
+  if (headerTextboxItems.length) {
+    const headerTextboxesBlock: TextboxesBlock = { type: 'textboxes', id: uniqueId('header-textboxes'), header: true, items: headerTextboxItems };
+    blocks.push(headerTextboxesBlock);
+  }
+
   const trailingAttachments = Array.from(objectPool.values())
     .filter((item) => item?.attachment && !usedAttachmentNames.has(item.entry.name))
     .map((item) => item.attachment as AttachmentAsset);
@@ -650,6 +1104,29 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
   }
 
   collectAssetWarnings(assets, warnings);
+
+  const countInnerBlocks = (innerBlocks: Array<ParagraphBlock | TableBlock>): number => innerBlocks.reduce((sum, block) => {
+    if (block.type === 'paragraph') return sum + 1;
+    return sum + block.rows.reduce((rowSum, row) => rowSum + row.cells.reduce((cellSum, cell) => cellSum + cell.paragraphs.length, 0), 0);
+  }, 0);
+  const paragraphCount = blocks.reduce((sum, block) => {
+    if (block.type === 'paragraph' || block.type === 'table') {
+      return sum + countInnerBlocks([block]);
+    }
+    if (block.type === 'notes') {
+      return sum + block.items.reduce((itemSum, item) => itemSum + countInnerBlocks(item.blocks), 0);
+    }
+    if (block.type === 'comments') {
+      return sum + block.items.reduce((itemSum, item) => itemSum + countInnerBlocks(item.blocks), 0);
+    }
+    if (block.type === 'headers') {
+      return sum + block.stories.reduce((storySum, story) => storySum + countInnerBlocks(story.blocks), 0);
+    }
+    if (block.type === 'textboxes') {
+      return sum + block.items.reduce((itemSum, item) => itemSum + countInnerBlocks(item.blocks), 0);
+    }
+    return sum;
+  }, 0);
 
   return {
     kind: 'msdoc',
@@ -665,11 +1142,17 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
         ccpText: fib.fibRgLw.ccpText,
       },
       counts: {
-        paragraphs: paragraphs.length,
+        paragraphs: paragraphCount,
         blocks: blocks.length,
         assets: assets.length,
         styles: styles.styles.size,
         fonts: fonts.fonts.length,
+        footnotes: footnoteItems.length,
+        endnotes: endnoteItems.length,
+        comments: commentItems.length,
+        headers: headerStories.length,
+        textboxes: textboxItems.length,
+        headerTextboxes: headerTextboxItems.length,
       },
     },
     fonts: fonts.fonts,

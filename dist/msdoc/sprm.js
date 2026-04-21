@@ -2,6 +2,7 @@ import { HIGHLIGHT_COLORS } from './constants.js';
 export const SprmCodes = {
     sprmCFRMarkDel: 0x0800,
     sprmCFRMark: 0x0801,
+    sprmCFRMarkIns: 0x0801,
     sprmCFFldVanish: 0x0802,
     sprmCPicLocation: 0x6a03,
     sprmCIbstRMark: 0x4804,
@@ -352,7 +353,13 @@ export function decodeSprm(sprm, operandBytes) {
     const bytes = operandBytes;
     const raw = sprm;
     switch (sprm) {
+        case SprmCodes.sprmCFRMarkDel: return setMeta('char', 'revisionDelete', boolValue(bytes), raw, bytes);
+        case SprmCodes.sprmCFRMark:
+        case SprmCodes.sprmCFRMarkIns: return setMeta('char', 'revisionInsert', boolValue(bytes), raw, bytes);
+        case SprmCodes.sprmCFFldVanish: return setMeta('char', 'fieldVanish', boolValue(bytes), raw, bytes);
         case SprmCodes.sprmCPicLocation: return setMeta('char', 'pictureOffset', u32(bytes, 0) >>> 0, raw, bytes);
+        case SprmCodes.sprmCIbstRMark: return setMeta('char', 'revisionAuthorIndex', u16(bytes, 0), raw, bytes);
+        case SprmCodes.sprmCDttmRMark: return setMeta('char', 'revisionTimestampRaw', u32(bytes, 0), raw, bytes);
         case SprmCodes.sprmCFData: return setMeta('char', 'data', boolValue(bytes), raw, bytes);
         case SprmCodes.sprmCFOle2: return setMeta('char', 'ole2', boolValue(bytes), raw, bytes);
         case SprmCodes.sprmCIstd: return setMeta('char', 'charStyleId', u16(bytes, 0), raw, bytes);

@@ -1,5 +1,6 @@
 import { BinaryReader } from '../core/binary.js';
 import { dataUrlFromBytes, slugify, uniqueId } from '../core/utils.js';
+import { convertMetafileToSvg } from './vector.js';
 const DEFAULT_MAX_PICTURE_BYTES = 8 * 1024 * 1024;
 const PICF_HEADER_SIZE = 68;
 const MM_SHAPE = 0x0064;
@@ -369,6 +370,9 @@ function extractBlipPayload(bytes, offset, header) {
         const infoSize = uidBytes + 34;
         if (atom.length < infoSize)
             return null;
+        const metaReader = new BinaryReader(atom);
+        const metafileCompression = atom[uidBytes + 32] ?? 0xff;
+        const metafileFilter = atom[uidBytes + 33] ?? 0xff;
         const payload = atom.subarray(infoSize);
         const mime = header.recType === OFFICEART_BLIP_EMF ? 'image/emf' : header.recType === OFFICEART_BLIP_WMF ? 'image/wmf' : 'image/pict';
         return {
@@ -376,7 +380,14 @@ function extractBlipPayload(bytes, offset, header) {
             bytes: payload,
             displayable: isBrowserDisplayableMime(mime),
             kind: 'officeArt',
-            meta: { recType: header.recType, recInstance: header.recInstance },
+            meta: {
+                recType: header.recType,
+                recInstance: header.recInstance,
+                metafileCompression,
+                metafileFilter,
+                metafileCompressed: metafileCompression !== 0xfe,
+                fbseSize: metaReader.u32(uidBytes + 28),
+            },
         };
     }
     return null;
@@ -441,6 +452,31 @@ function pickBestPictureCandidate(candidates) {
     }
     return best;
 }
+function maybeConvertVectorCandidate(candidate) {
+    if (!/^(?:image\/emf|image\/wmf)$/i.test(candidate.mime))
+        return candidate;
+    if (!candidate.bytes.length)
+        return candidate;
+    if (candidate.meta?.metafileCompressed)
+        return candidate;
+    const converted = convertMetafileToSvg(candidate.mime, candidate.bytes);
+    if (!converted)
+        return candidate;
+    return {
+        ...candidate,
+        mime: converted.mime,
+        bytes: converted.bytes,
+        displayable: true,
+        meta: {
+            ...(candidate.meta || {}),
+            vectorConverted: true,
+            vectorSourceMime: converted.sourceMime,
+            vectorWidth: converted.width,
+            vectorHeight: converted.height,
+            vectorRecordCount: converted.recordCount,
+        },
+    };
+}
 function createImageAsset(candidate, pictureOffset, picf, linkedPath) {
     const sourceUrl = candidate.sourceUrl;
     const localExternal = sourceUrl ? isLocalExternalPath(sourceUrl) : false;
@@ -494,7 +530,7 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
     const officeArtCandidates = findOfficeArtCandidates(pictureChunk, pictureDataOffset);
     const officeArtCandidate = pickBestPictureCandidate(officeArtCandidates);
     if (officeArtCandidate) {
-        return createImageAsset(officeArtCandidate, pictureOffset, picf, linkedPath);
+        return createImageAsset(maybeConvertVectorCandidate(officeArtCandidate), pictureOffset, picf, linkedPath);
     }
     if (linkedPath) {
         const mime = detectMimeFromPath(linkedPath) || 'application/octet-stream';
@@ -525,14 +561,21 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
     const start = bodyStart + segment.start;
     const end = Math.min(bodyStart + segment.end, pictureChunk.length);
     const imageBytes = pictureChunk.subarray(start, end);
+    const fallbackCandidate = maybeConvertVectorCandidate({
+        mime: segment.mime,
+        bytes: imageBytes,
+        displayable: isBrowserDisplayableMime(segment.mime),
+        kind: 'fallback',
+        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: isBrowserDisplayableMime(segment.mime) },
+    });
     return {
         id: uniqueId('asset-img'),
         type: 'image',
-        mime: segment.mime,
-        bytes: imageBytes,
-        dataUrl: dataUrlFromBytes(imageBytes, segment.mime),
-        displayable: isBrowserDisplayableMime(segment.mime),
-        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: isBrowserDisplayableMime(segment.mime) },
+        mime: fallbackCandidate.mime,
+        bytes: fallbackCandidate.bytes,
+        dataUrl: dataUrlFromBytes(fallbackCandidate.bytes, fallbackCandidate.mime),
+        displayable: fallbackCandidate.displayable,
+        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: Boolean(fallbackCandidate.displayable), ...(fallbackCandidate.meta || {}) },
     };
 }
 function readCString(bytes, offset) {

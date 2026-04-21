@@ -43,6 +43,12 @@ export function charPropsToState(properties: DecodedProperty[]): CharState {
     emboss: false,
     imprint: false,
     rtl: false,
+    revisionInsert: undefined,
+    revisionDelete: undefined,
+    revisionAuthorIndex: undefined,
+    revisionAuthor: undefined,
+    revisionTimestampRaw: undefined,
+    fieldVanish: undefined,
     pictureOffset: undefined,
     data: false,
     ole2: false,
@@ -77,6 +83,9 @@ export function charPropsToState(properties: DecodedProperty[]): CharState {
       case 'ole2':
       case 'object':
       case 'special':
+      case 'revisionInsert':
+      case 'revisionDelete':
+      case 'fieldVanish':
         state[prop.name] = Boolean(prop.value);
         break;
       case 'underline': state.underline = (prop.value as number | undefined) ?? 0; break;
@@ -89,6 +98,9 @@ export function charPropsToState(properties: DecodedProperty[]): CharState {
       case 'scale': state.scale = (prop.value as number | undefined) || 100; break;
       case 'pictureOffset': state.pictureOffset = prop.value as number | undefined; break;
       case 'charStyleId': state.charStyleId = prop.value as number | undefined; break;
+      case 'revisionAuthorIndex': state.revisionAuthorIndex = prop.value as number | undefined; break;
+      case 'revisionAuthor': state.revisionAuthor = prop.value as string | undefined; break;
+      case 'revisionTimestampRaw': state.revisionTimestampRaw = prop.value as number | undefined; break;
       default:
         state[prop.name] = prop.value;
         break;

@@ -30,6 +30,12 @@ export function charPropsToState(properties) {
         emboss: false,
         imprint: false,
         rtl: false,
+        revisionInsert: undefined,
+        revisionDelete: undefined,
+        revisionAuthorIndex: undefined,
+        revisionAuthor: undefined,
+        revisionTimestampRaw: undefined,
+        fieldVanish: undefined,
         pictureOffset: undefined,
         data: false,
         ole2: false,
@@ -64,6 +70,9 @@ export function charPropsToState(properties) {
             case 'ole2':
             case 'object':
             case 'special':
+            case 'revisionInsert':
+            case 'revisionDelete':
+            case 'fieldVanish':
                 state[prop.name] = Boolean(prop.value);
                 break;
             case 'underline':
@@ -95,6 +104,15 @@ export function charPropsToState(properties) {
                 break;
             case 'charStyleId':
                 state.charStyleId = prop.value;
+                break;
+            case 'revisionAuthorIndex':
+                state.revisionAuthorIndex = prop.value;
+                break;
+            case 'revisionAuthor':
+                state.revisionAuthor = prop.value;
+                break;
+            case 'revisionTimestampRaw':
+                state.revisionTimestampRaw = prop.value;
                 break;
             default:
                 state[prop.name] = prop.value;

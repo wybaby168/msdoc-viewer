@@ -1,5 +1,6 @@
 export { parseMsDoc } from './msdoc/parser.js';
 export { renderMsDoc, defaultMsDocCss } from './render/html.js';
 export { createMsDocViewer, mountMsDoc, parseMsDocToHtml } from './viewer.js';
+export { convertMetafileToSvg } from './msdoc/vector.js';
 export { MsDocWorkerClient } from './worker-client.js';
 //# sourceMappingURL=index.js.map

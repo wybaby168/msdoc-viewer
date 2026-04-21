@@ -173,16 +173,46 @@ function inlineStyleToCss(styleState) {
     if (styleState.shadow || styleState.emboss || styleState.imprint) {
         style['text-shadow'] = style['text-shadow'] ? `${style['text-shadow']}, 0.06em 0.06em 0.08em rgba(0,0,0,.25)` : '0.06em 0.06em 0.08em rgba(0,0,0,.25)';
     }
+    if (styleState.revisionInsert) {
+        style['background-color'] = style['background-color'] || 'rgba(22,163,74,.10)';
+        style['text-decoration-color'] = '#16a34a';
+    }
+    if (styleState.revisionDelete) {
+        style.color = style.color || '#b91c1c';
+        style['background-color'] = style['background-color'] || 'rgba(185,28,28,.08)';
+    }
     if (styleState.rtl)
         style.direction = 'rtl';
     return style;
+}
+function revisionTitle(styleState) {
+    const parts = [];
+    if (styleState.revisionInsert)
+        parts.push('Inserted text');
+    if (styleState.revisionDelete)
+        parts.push('Deleted text');
+    if (styleState.revisionAuthor)
+        parts.push(`by ${styleState.revisionAuthor}`);
+    return parts.join(' ');
+}
+function wrapRevision(inner, styleState) {
+    const title = revisionTitle(styleState);
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+    if (styleState.revisionDelete) {
+        return `<del class="msdoc-revision msdoc-revision-delete"${titleAttr}>${inner}</del>`;
+    }
+    if (styleState.revisionInsert) {
+        return `<ins class="msdoc-revision msdoc-revision-insert"${titleAttr}>${inner}</ins>`;
+    }
+    return inner;
 }
 function renderTextNode(node) {
     const content = escapeHtml(node.text);
     const inlineStyle = inlineStyleToCss(node.style);
     inlineStyle['white-space'] = 'break-spaces';
     const style = styleObjectToCss(inlineStyle);
-    const inner = `<span${style ? ` style="${style}"` : ''}>${content}</span>`;
+    const span = `<span${style ? ` style="${style}"` : ''}>${content}</span>`;
+    const inner = wrapRevision(span, node.style);
     const href = sanitizeLinkHref(node.href);
     if (href) {
         return `<a class="msdoc-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${inner}</a>`;
@@ -214,6 +244,15 @@ function renderAttachmentNode(node) {
     const inner = `<a class="msdoc-attachment" href="${escapeHtml(node.asset.dataUrl)}" download="${label}">📎 ${label}</a>`;
     return joinWithExternalRef(inner, sanitizeLinkHref(node.href));
 }
+function renderNoteRefNode(node) {
+    const href = `#${escapeHtml(node.refId)}`;
+    return `<sup class="msdoc-note-ref msdoc-note-ref-${node.noteType}"><a class="msdoc-link" href="${href}">${escapeHtml(node.label)}</a></sup>`;
+}
+function renderCommentRefNode(node) {
+    const href = `#${escapeHtml(node.commentId)}`;
+    const title = node.author ? ` title="${escapeHtml(node.author)}"` : '';
+    return `<sup class="msdoc-comment-ref"${title}><a class="msdoc-link" href="${href}">💬${escapeHtml(node.label)}</a></sup>`;
+}
 function renderInlineNodes(nodes) {
     return nodes.map((node) => {
         if (node.type === 'text')
@@ -222,6 +261,10 @@ function renderInlineNodes(nodes) {
             return renderImageNode(node);
         if (node.type === 'attachment')
             return renderAttachmentNode(node);
+        if (node.type === 'noteRef')
+            return renderNoteRefNode(node);
+        if (node.type === 'commentRef')
+            return renderCommentRefNode(node);
         if (node.type === 'lineBreak')
             return '<br>';
         if (node.type === 'pageBreak')
@@ -309,6 +352,62 @@ function renderTableBlock(block) {
     }).join('');
     return `<table class="msdoc-table msdoc-table-depth-${block.depth}" style="${styleObjectToCss(tableStyle(block))}"><tbody>${rows}</tbody></table>`;
 }
+function renderBlockList(blocks) {
+    return blocks.map((block) => block.type === 'paragraph' ? renderParagraphBlock(block) : renderTableBlock(block)).join('');
+}
+function renderNotesBlock(block) {
+    const title = block.kind === 'footnote' ? 'Footnotes' : 'Endnotes';
+    const items = block.items.map((item) => `
+    <li id="${escapeHtml(item.id)}" class="msdoc-note-item">
+      <div class="msdoc-note-label">${escapeHtml(item.label)}</div>
+      <div class="msdoc-note-body">${renderBlockList(item.blocks)}</div>
+    </li>
+  `).join('');
+    return `<section class="msdoc-section msdoc-notes msdoc-notes-${block.kind}"><div class="msdoc-section-title">${title}</div><ol class="msdoc-note-list">${items}</ol></section>`;
+}
+function renderCommentsBlock(block) {
+    const items = block.items.map((item) => {
+        const meta = [item.author, item.initials].filter(Boolean).join(' · ');
+        return `
+      <li id="${escapeHtml(item.id)}" class="msdoc-comment-item">
+        <div class="msdoc-comment-header">
+          <span class="msdoc-comment-label">Comment ${escapeHtml(item.label)}</span>
+          ${meta ? `<span class="msdoc-comment-meta">${escapeHtml(meta)}</span>` : ''}
+        </div>
+        <div class="msdoc-comment-body">${renderBlockList(item.blocks)}</div>
+      </li>
+    `;
+    }).join('');
+    return `<section class="msdoc-section msdoc-comments"><div class="msdoc-section-title">Comments</div><ol class="msdoc-comment-list">${items}</ol></section>`;
+}
+function renderHeadersBlock(block) {
+    const items = block.stories.map((story) => {
+        const section = story.sectionIndex != null ? `Section ${story.sectionIndex}` : 'Shared';
+        const inherited = story.inheritedFromSection != null ? `<span class="msdoc-badge">inherits section ${story.inheritedFromSection}</span>` : '';
+        return `
+      <article class="msdoc-story-card">
+        <div class="msdoc-story-card-title">${escapeHtml(story.roleLabel)}</div>
+        <div class="msdoc-story-card-meta">${escapeHtml(section)} ${inherited}</div>
+        <div class="msdoc-story-card-body">${renderBlockList(story.blocks)}</div>
+      </article>
+    `;
+    }).join('');
+    return `<section class="msdoc-section msdoc-headers"><div class="msdoc-section-title">Headers &amp; footers</div><div class="msdoc-story-grid">${items}</div></section>`;
+}
+function renderTextboxesBlock(block) {
+    const title = block.header ? 'Header textboxes' : 'Textboxes';
+    const items = block.items.map((item) => {
+        const meta = [item.reusable ? 'reusable' : '', item.shapeId != null ? `shape ${item.shapeId}` : ''].filter(Boolean).join(' · ');
+        return `
+      <article class="msdoc-story-card">
+        <div class="msdoc-story-card-title">${escapeHtml(item.label)}</div>
+        ${meta ? `<div class="msdoc-story-card-meta">${escapeHtml(meta)}</div>` : ''}
+        <div class="msdoc-story-card-body">${renderBlockList(item.blocks)}</div>
+      </article>
+    `;
+    }).join('');
+    return `<section class="msdoc-section msdoc-textboxes"><div class="msdoc-section-title">${title}</div><div class="msdoc-story-grid">${items}</div></section>`;
+}
 function renderAttachmentsBlock(block) {
     const items = block.items.map((item) => `<li><a class="msdoc-attachment" href="${escapeHtml(item.dataUrl)}" download="${escapeHtml(item.name || 'embedded-file')}">📎 ${escapeHtml(item.name || 'embedded-file')}</a></li>`).join('');
     return `<section class="msdoc-attachments"><div class="msdoc-attachments-title">Embedded attachments</div><ul>${items}</ul></section>`;
@@ -331,6 +430,25 @@ export function defaultMsDocCss() {
 .msdoc-attachments{margin-top:20px;padding-top:12px;border-top:1px solid #e5e7eb}
 .msdoc-attachments-title{font-weight:600;margin-bottom:8px}
 .msdoc-page-break{display:block;height:0;border-top:1px dashed #cbd5e1;margin:16px 0}
+.msdoc-section{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb}
+.msdoc-section-title{font-weight:700;margin-bottom:12px;font-size:1rem}
+.msdoc-note-list,.msdoc-comment-list{margin:0;padding-left:20px}
+.msdoc-note-item,.msdoc-comment-item{margin:0 0 12px}
+.msdoc-note-item:last-child,.msdoc-comment-item:last-child{margin-bottom:0}
+.msdoc-note-label,.msdoc-comment-label{font-weight:600}
+.msdoc-note-body,.msdoc-comment-body{margin-top:4px}
+.msdoc-comment-header{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.msdoc-comment-meta{color:#6b7280;font-size:.92em}
+.msdoc-story-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.msdoc-story-card{border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fafafa}
+.msdoc-story-card-title{font-weight:600;margin-bottom:4px}
+.msdoc-story-card-meta{color:#6b7280;font-size:.92em;margin-bottom:8px}
+.msdoc-badge{display:inline-block;padding:2px 6px;border-radius:999px;background:#eef2ff;color:#4338ca;font-size:.82em}
+.msdoc-note-ref,.msdoc-comment-ref{font-size:.78em;vertical-align:super;line-height:1}
+.msdoc-comment-ref a,.msdoc-note-ref a{text-decoration:none}
+.msdoc-revision{border-radius:2px;padding:0 1px}
+.msdoc-revision-insert{text-decoration:none}
+.msdoc-revision-delete{text-decoration-thickness:1px}
 `;
 }
 /**
@@ -347,6 +465,14 @@ export function renderMsDoc(parsed, options = {}) {
             return renderTableBlock(block);
         if (block.type === 'attachments')
             return renderAttachmentsBlock(block);
+        if (block.type === 'notes')
+            return renderNotesBlock(block);
+        if (block.type === 'comments')
+            return renderCommentsBlock(block);
+        if (block.type === 'headers')
+            return renderHeadersBlock(block);
+        if (block.type === 'textboxes')
+            return renderTextboxesBlock(block);
         return '';
     }).join('');
     return {

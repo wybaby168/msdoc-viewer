@@ -2,6 +2,7 @@ import type { DecodedProperty } from '../types.js';
 export declare const SprmCodes: {
     readonly sprmCFRMarkDel: 2048;
     readonly sprmCFRMark: 2049;
+    readonly sprmCFRMarkIns: 2049;
     readonly sprmCFFldVanish: 2050;
     readonly sprmCPicLocation: 27139;
     readonly sprmCIbstRMark: 18436;

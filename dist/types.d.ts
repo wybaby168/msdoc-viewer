@@ -247,6 +247,12 @@ export interface CharState {
     emboss: boolean;
     imprint: boolean;
     rtl: boolean;
+    revisionInsert?: boolean;
+    revisionDelete?: boolean;
+    revisionAuthorIndex?: number;
+    revisionAuthor?: string;
+    revisionTimestampRaw?: number;
+    fieldVanish?: boolean;
     pictureOffset?: number;
     data: boolean;
     ole2: boolean;
@@ -449,6 +455,14 @@ export interface ImageAssetMeta extends PicfSummary, OfficeArtBlipMeta {
     sourceKind?: 'embedded' | 'linked' | 'fallback';
     localExternal?: boolean;
     browserRenderable?: boolean;
+    metafileCompressed?: boolean;
+    metafileCompression?: number;
+    metafileFilter?: number;
+    vectorConverted?: boolean;
+    vectorSourceMime?: string;
+    vectorWidth?: number;
+    vectorHeight?: number;
+    vectorRecordCount?: number;
 }
 export interface AttachmentAssetMeta {
     stream?: string;
@@ -510,7 +524,19 @@ export interface LineBreakInlineNode {
 export interface PageBreakInlineNode {
     type: 'pageBreak';
 }
-export type InlineNode = TextInlineNode | ImageInlineNode | AttachmentInlineNode | LineBreakInlineNode | PageBreakInlineNode;
+export interface NoteReferenceInlineNode {
+    type: 'noteRef';
+    noteType: 'footnote' | 'endnote';
+    refId: string;
+    label: string;
+}
+export interface CommentReferenceInlineNode {
+    type: 'commentRef';
+    commentId: string;
+    label: string;
+    author?: string;
+}
+export type InlineNode = TextInlineNode | ImageInlineNode | AttachmentInlineNode | LineBreakInlineNode | PageBreakInlineNode | NoteReferenceInlineNode | CommentReferenceInlineNode;
 export interface ParagraphBlock {
     type: 'paragraph';
     id: string;
@@ -548,7 +574,69 @@ export interface AttachmentsBlock {
     id: string;
     items: AttachmentAsset[];
 }
-export type MsDocBlock = ParagraphBlock | TableBlock | AttachmentsBlock;
+export interface NoteItem {
+    id: string;
+    kind: 'footnote' | 'endnote';
+    index: number;
+    label: string;
+    refCp?: number;
+    blocks: Array<ParagraphBlock | TableBlock>;
+    text: string;
+}
+export interface NotesBlock {
+    type: 'notes';
+    id: string;
+    kind: 'footnote' | 'endnote';
+    items: NoteItem[];
+}
+export interface CommentItem {
+    id: string;
+    index: number;
+    label: string;
+    refCp?: number;
+    author?: string;
+    initials?: string;
+    bookmarkId?: number;
+    blocks: Array<ParagraphBlock | TableBlock>;
+    text: string;
+}
+export interface CommentsBlock {
+    type: 'comments';
+    id: string;
+    items: CommentItem[];
+}
+export type HeaderFooterRole = 'footnoteSeparator' | 'footnoteContinuationSeparator' | 'footnoteContinuationNotice' | 'endnoteSeparator' | 'endnoteContinuationSeparator' | 'endnoteContinuationNotice' | 'evenHeader' | 'oddHeader' | 'evenFooter' | 'oddFooter' | 'firstHeader' | 'firstFooter';
+export interface HeaderFooterStory {
+    id: string;
+    role: HeaderFooterRole;
+    roleLabel: string;
+    sectionIndex?: number;
+    inheritedFromSection?: number;
+    blocks: Array<ParagraphBlock | TableBlock>;
+    text: string;
+}
+export interface HeadersBlock {
+    type: 'headers';
+    id: string;
+    stories: HeaderFooterStory[];
+}
+export interface TextboxItem {
+    id: string;
+    index: number;
+    label: string;
+    header: boolean;
+    reusable: boolean;
+    shapeId?: number;
+    blocks: Array<ParagraphBlock | TableBlock>;
+    text: string;
+}
+export interface TextboxesBlock {
+    type: 'textboxes';
+    id: string;
+    header: boolean;
+    items: TextboxItem[];
+}
+export type MsDocBlock = ParagraphBlock | TableBlock | AttachmentsBlock | NotesBlock | CommentsBlock | HeadersBlock | TextboxesBlock;
 export interface ParagraphModel {
     id: string;
     cpStart: number;
@@ -587,6 +675,12 @@ export interface MsDocMeta {
         assets: number;
         styles: number;
         fonts: number;
+        footnotes?: number;
+        endnotes?: number;
+        comments?: number;
+        headers?: number;
+        textboxes?: number;
+        headerTextboxes?: number;
     };
 }
 export interface MsDocStyleSummary {
