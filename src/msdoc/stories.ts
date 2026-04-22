@@ -165,13 +165,16 @@ export function parseTextboxMeta(data: Uint8Array): TextboxMeta {
   };
 }
 
-const HEADER_ROLES: HeaderFooterRole[] = [
+const HEADER_SYSTEM_ROLES: HeaderFooterRole[] = [
   'footnoteSeparator',
   'footnoteContinuationSeparator',
   'footnoteContinuationNotice',
   'endnoteSeparator',
   'endnoteContinuationSeparator',
   'endnoteContinuationNotice',
+];
+
+const HEADER_SECTION_ROLES: HeaderFooterRole[] = [
   'evenHeader',
   'oddHeader',
   'evenFooter',
@@ -215,8 +218,13 @@ export function buildHeaderStoryDescriptors(tableBytes: Uint8Array, fibRgFcLcb: 
     const localStart = values[i] ?? 0;
     const localEnd = values[i + 1] ?? 0;
     if (localEnd < localStart) continue;
-    const role = HEADER_ROLES[i % HEADER_ROLES.length] || 'oddHeader';
-    const sectionIndex = i >= 6 ? Math.floor((i - 6) / 6) + 1 : undefined;
+
+    const isSystemRole = i < HEADER_SYSTEM_ROLES.length;
+    const role = isSystemRole
+      ? HEADER_SYSTEM_ROLES[i] || 'oddHeader'
+      : HEADER_SECTION_ROLES[(i - HEADER_SYSTEM_ROLES.length) % HEADER_SECTION_ROLES.length] || 'oddHeader';
+    const sectionIndex = isSystemRole ? undefined : Math.floor((i - HEADER_SYSTEM_ROLES.length) / HEADER_SECTION_ROLES.length) + 1;
+
     const descriptor: HeaderStoryDescriptor = {
       index: i,
       role,
@@ -225,7 +233,8 @@ export function buildHeaderStoryDescriptors(tableBytes: Uint8Array, fibRgFcLcb: 
       cpStart: headerWindow.cpStart + localStart,
       cpEnd: headerWindow.cpStart + localEnd,
     };
-    if (sectionIndex && i >= 6 && localStart === localEnd) {
+
+    if (sectionIndex && localStart === localEnd) {
       const inherited = sectionEffective.get(role);
       if (inherited) descriptor.inheritedFromSection = inherited.sectionIndex;
     }

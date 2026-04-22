@@ -269,6 +269,7 @@ export function tablePropsToState(properties) {
         autoFit: undefined,
         widthBefore: undefined,
         widthAfter: undefined,
+        cellSpacing: undefined,
         defTable: undefined,
         operations: [],
     };
@@ -321,6 +322,9 @@ export function tablePropsToState(properties) {
             case 'widthAfter':
                 state.widthAfter = prop.value;
                 break;
+            case 'cellSpacing':
+                state.cellSpacing = prop.value;
+                break;
             case 'defTable':
                 state.defTable = prop.value;
                 break;
@@ -344,6 +348,33 @@ export function cssUnderline(value) {
 }
 export function cssVerticalAlign(value) {
     return VERTICAL_ALIGN_MAP[value] || 'top';
+}
+function decodeCellSideMask(mask) {
+    const value = mask ?? 0;
+    const sides = [];
+    if (value & 0x01)
+        sides.push('top');
+    if (value & 0x02)
+        sides.push('left');
+    if (value & 0x04)
+        sides.push('bottom');
+    if (value & 0x08)
+        sides.push('right');
+    return sides;
+}
+function applyPaddingOperation(cell, value) {
+    if (!value)
+        return;
+    const width = value.width;
+    if (width == null)
+        return;
+    const sides = decodeCellSideMask(value.grfbrc);
+    if (!sides.length)
+        return;
+    const padding = { ...(cell.padding || {}) };
+    for (const side of sides)
+        padding[side] = width;
+    cell.padding = padding;
 }
 export function rangeApply(list, range, callback) {
     if (!range)
@@ -411,6 +442,9 @@ export function applyTableStateToCells(tableState) {
                 break;
             case 'cellNoWrap':
                 rangeApply(cells, op.value.range, (cell) => { cell.noWrap = Boolean(op.value.value); });
+                break;
+            case 'cellPadding':
+                rangeApply(cells, op.value.range, (cell) => { applyPaddingOperation(cell, op.value); });
                 break;
             case 'textFlow':
                 rangeApply(cells, op.value.range, (cell) => { cell.textFlow = op.value.value; });

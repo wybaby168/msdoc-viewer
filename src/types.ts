@@ -361,6 +361,14 @@ export interface RangeWidthOperand {
   width?: number;
   wWidth?: number;
   ftsWidth?: number;
+  grfbrc?: number;
+}
+
+export interface CellBoxEdges {
+  top?: number;
+  left?: number;
+  bottom?: number;
+  right?: number;
 }
 
 export interface RangeBorderOperand {
@@ -412,6 +420,7 @@ export interface TableState {
   autoFit?: unknown;
   widthBefore?: unknown;
   widthAfter?: unknown;
+  cellSpacing?: RangeWidthOperand;
   defTable?: TDefTableOperand;
   operations: DecodedProperty[];
   [key: string]: unknown;
@@ -431,6 +440,7 @@ export interface TableCellMeta {
   textFlow?: number;
   rightBoundary?: number;
   leftBoundary?: number;
+  padding?: CellBoxEdges;
   shading?: unknown;
 }
 
@@ -592,6 +602,8 @@ export type InlineNode = TextInlineNode | ImageInlineNode | AttachmentInlineNode
 export interface ParagraphBlock {
   type: 'paragraph';
   id: string;
+  cpStart: number;
+  cpEnd: number;
   styleId: number;
   styleName: string;
   paraState: ParaState;
@@ -619,6 +631,8 @@ export interface TableRowBlock {
 export interface TableBlock {
   type: 'table';
   id: string;
+  cpStart: number;
+  cpEnd: number;
   depth: number;
   rows: TableRowBlock[];
   state: TableState;

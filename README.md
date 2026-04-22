@@ -27,7 +27,9 @@
 - 字体表读取
 - 常见字符样式：粗体、斜体、下划线、删除线、字号、颜色、高亮、大小写、上下标、字体切换
 - 常见段落样式：对齐、缩进、段前后距、行距、分页控制、边框
-- 表格：`sprmTDefTable`、单元格宽度、横向/纵向合并、边框、垂直对齐、nowrap、fitText
+- 表格：`sprmTDefTable`、单元格宽度、横向/纵向合并、边框、垂直对齐、nowrap、fitText，以及对“cell mark 段落 + row end 段落”混合表格的稳健聚合，避免老 `.doc` 把单元格内容拆成普通段落
+- 页眉页脚：按 header/footer story 渲染为页面顶部/底部区域，不再仅作为附录卡片；header textbox 中的页码等内容也会合并到页脚/页眉展示
+- 浮动元素：会优先把 `PlcfSpaMom` / `PlcfSpaHdr` 锚定的 floating shape 与可匹配的图片段落 / textbox 关联，并以接近页面布局的浮动块形式输出；无法完整还原的 shape 保留诊断占位，避免静默丢失
 - 图片：按 `PICFAndOfficeArtData` / `PICF` / `OfficeArtInlineSpContainer` / `OfficeArtBStoreContainerFileBlock` / `OfficeArtFBSE` / `OfficeArtBlip*` 解析，优先提取浏览器可直接显示的 PNG/JPEG/BMP 等位图
 - 多 story 内容：主文档、脚注、尾注、批注、页眉页脚、textbox、header textbox
 - floating shape 锚点：解析 `PlcfSpaMom` / `PlcfSpaHdr` 的 `Spa` 结构，把包围框、锚定基准、环绕方式、前后文关系暴露到 AST，并自动关联可匹配的 textbox

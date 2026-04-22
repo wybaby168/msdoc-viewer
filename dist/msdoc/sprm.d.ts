@@ -142,7 +142,8 @@ export declare const SprmCodes: {
     readonly sprmTSetShdOdd: 54830;
     readonly sprmTSetBrc: 54831;
     readonly sprmTCellPadding: 54834;
-    readonly sprmTCellPaddingDefault: 54835;
+    readonly sprmTCellSpacingDefault: 54835;
+    readonly sprmTCellPaddingDefault: 54836;
     readonly sprmTCellWidth: 54837;
     readonly sprmTFitText: 63030;
     readonly sprmTFCellNoWrap: 54841;

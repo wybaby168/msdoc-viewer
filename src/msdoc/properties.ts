@@ -208,6 +208,7 @@ export function tablePropsToState(properties: DecodedProperty[]): TableState {
     autoFit: undefined,
     widthBefore: undefined,
     widthAfter: undefined,
+    cellSpacing: undefined,
     defTable: undefined,
     operations: [],
   };
@@ -232,6 +233,7 @@ export function tablePropsToState(properties: DecodedProperty[]): TableState {
       case 'autoFit': state.autoFit = prop.value; break;
       case 'widthBefore': state.widthBefore = prop.value; break;
       case 'widthAfter': state.widthAfter = prop.value; break;
+      case 'cellSpacing': state.cellSpacing = prop.value as TableState['cellSpacing']; break;
       case 'defTable': state.defTable = prop.value as TableState['defTable']; break;
       default:
         state.operations.push(prop);
@@ -256,6 +258,28 @@ export function cssUnderline(value: number | undefined): string {
 
 export function cssVerticalAlign(value: number | undefined): string {
   return VERTICAL_ALIGN_MAP[value as keyof typeof VERTICAL_ALIGN_MAP] || 'top';
+}
+
+
+function decodeCellSideMask(mask: number | undefined): Array<keyof NonNullable<TableCellMeta['padding']>> {
+  const value = mask ?? 0;
+  const sides: Array<keyof NonNullable<TableCellMeta['padding']>> = [];
+  if (value & 0x01) sides.push('top');
+  if (value & 0x02) sides.push('left');
+  if (value & 0x04) sides.push('bottom');
+  if (value & 0x08) sides.push('right');
+  return sides;
+}
+
+function applyPaddingOperation(cell: TableCellMeta, value: { width?: number; grfbrc?: number } | undefined): void {
+  if (!value) return;
+  const width = value.width;
+  if (width == null) return;
+  const sides = decodeCellSideMask(value.grfbrc);
+  if (!sides.length) return;
+  const padding = { ...(cell.padding || {}) };
+  for (const side of sides) padding[side] = width;
+  cell.padding = padding;
 }
 
 export function rangeApply<T>(list: T[], range: { first: number; lim: number } | undefined, callback: (item: T, index: number) => void): void {
@@ -321,6 +345,9 @@ export function applyTableStateToCells(tableState: TableState): TableCellMeta[] 
         break;
       case 'cellNoWrap':
         rangeApply(cells, (op.value as { range: { first: number; lim: number } }).range, (cell) => { cell.noWrap = Boolean((op.value as { value: unknown }).value); });
+        break;
+      case 'cellPadding':
+        rangeApply(cells, (op.value as { range: { first: number; lim: number } }).range, (cell) => { applyPaddingOperation(cell, op.value as { width?: number; grfbrc?: number }); });
         break;
       case 'textFlow':
         rangeApply(cells, (op.value as { range: { first: number; lim: number } }).range, (cell) => { cell.textFlow = (op.value as { value: number }).value; });

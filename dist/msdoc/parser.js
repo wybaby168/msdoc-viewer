@@ -492,6 +492,8 @@ function paragraphToBlock(paragraph) {
     return {
         type: 'paragraph',
         id: paragraph.id,
+        cpStart: paragraph.cpStart,
+        cpEnd: paragraph.cpEnd,
         styleId: paragraph.styleId,
         styleName: paragraph.styleName,
         paraState: paragraph.paraState,
@@ -499,57 +501,255 @@ function paragraphToBlock(paragraph) {
         text: paragraph.text,
     };
 }
-function buildTableBlock(tableParagraphs) {
-    const rows = [];
-    let pendingRow = { cells: [] };
-    let pendingCellParagraphs = [];
-    for (const paragraph of tableParagraphs) {
-        pendingCellParagraphs.push(paragraph);
-        if (paragraph.terminator === DOC_CONTROL.cellMark) {
-            pendingRow.cells.push({
-                id: uniqueId('cell'),
-                paragraphs: pendingCellParagraphs.map(paragraphToBlock),
-                meta: null,
-            });
-            pendingCellParagraphs = [];
-            if (paragraph.paraState.tableRowEnd || paragraph.paraState.innerTableRowEnd) {
-                const cellDefs = applyTableStateToCells(paragraph.tableState);
-                while (cellDefs.length &&
-                    pendingRow.cells.length > cellDefs.length &&
-                    pendingRow.cells[pendingRow.cells.length - 1].paragraphs.every((block) => !block.text && !(block.inlines || []).length)) {
-                    pendingRow.cells.pop();
-                }
-                pendingRow.cells.forEach((cell, index) => {
-                    cell.meta = cellDefs[index] || { index };
-                });
-                const gridWidthTwips = cellDefs.length
-                    ? ((cellDefs[cellDefs.length - 1].rightBoundary || 0) - (cellDefs[0].leftBoundary || 0))
-                    : 0;
-                rows.push({
-                    id: uniqueId('row'),
-                    cells: pendingRow.cells,
-                    state: paragraph.tableState,
-                    gridWidthTwips,
-                });
-                pendingRow = { cells: [] };
-            }
+function cloneTableStateValue(value) {
+    if (Array.isArray(value))
+        return value.map((item) => cloneTableStateValue(item));
+    if (!value || typeof value !== 'object')
+        return value;
+    const out = {};
+    for (const [key, entry] of Object.entries(value))
+        out[key] = cloneTableStateValue(entry);
+    return out;
+}
+function cloneTableState(state) {
+    const base = tablePropsToState([]);
+    if (!state)
+        return base;
+    return {
+        ...base,
+        ...cloneTableStateValue(state),
+        operations: [...(state.operations || [])],
+    };
+}
+function isEmptyParagraphBlock(block) {
+    if (!block.text && !(block.inlines || []).length)
+        return true;
+    return !String(block.text || '').trim() && !(block.inlines || []).some((inline) => inline.type !== 'text' || String(inline.text || '').trim());
+}
+function cellHasRenderableContent(cell) {
+    if (!cell)
+        return false;
+    return cell.paragraphs.some((block) => !isEmptyParagraphBlock(block));
+}
+function createEmptyCellBlock() {
+    return {
+        id: uniqueId('cell'),
+        paragraphs: [],
+        meta: null,
+    };
+}
+function tableStateScore(state) {
+    if (!state)
+        return -1;
+    const cellCount = applyTableStateToCells(state).length;
+    let score = cellCount * 10;
+    if (state.defTable?.cells?.length)
+        score += 1000;
+    if (state.tableWidth?.wWidth)
+        score += 25;
+    score += state.operations?.length || 0;
+    return score;
+}
+function buildEffectiveTableState(templateState, rowState) {
+    const effective = cloneTableState(templateState);
+    if (!rowState)
+        return effective;
+    if (rowState.styleId != null)
+        effective.styleId = rowState.styleId;
+    if (rowState.tableWidth)
+        effective.tableWidth = cloneTableStateValue(rowState.tableWidth);
+    if (rowState.widthBefore != null)
+        effective.widthBefore = cloneTableStateValue(rowState.widthBefore);
+    if (rowState.widthAfter != null)
+        effective.widthAfter = cloneTableStateValue(rowState.widthAfter);
+    if (rowState.cellSpacing)
+        effective.cellSpacing = cloneTableStateValue(rowState.cellSpacing);
+    if (rowState.defTable)
+        effective.defTable = cloneTableStateValue(rowState.defTable);
+    if (rowState.leftIndent)
+        effective.leftIndent = rowState.leftIndent;
+    if (rowState.gapHalf)
+        effective.gapHalf = rowState.gapHalf;
+    if (rowState.rowHeight)
+        effective.rowHeight = rowState.rowHeight;
+    if (rowState.absLeft != null)
+        effective.absLeft = rowState.absLeft;
+    if (rowState.absTop != null)
+        effective.absTop = rowState.absTop;
+    if (rowState.distanceLeft != null)
+        effective.distanceLeft = rowState.distanceLeft;
+    if (rowState.distanceTop != null)
+        effective.distanceTop = rowState.distanceTop;
+    if (rowState.positionCode != null)
+        effective.positionCode = rowState.positionCode;
+    if (rowState.autoFit != null)
+        effective.autoFit = cloneTableStateValue(rowState.autoFit);
+    effective.alignment = rowState.alignment;
+    effective.cantSplit = rowState.cantSplit || effective.cantSplit;
+    effective.header = rowState.header || effective.header;
+    effective.rtl = rowState.rtl || effective.rtl;
+    effective.operations = [...(templateState?.operations || []), ...(rowState.operations || [])];
+    return effective;
+}
+function inferExpectedColumnCount(rawRows, explicitCellCount) {
+    if (explicitCellCount > 0)
+        return explicitCellCount;
+    let best = 0;
+    for (const row of rawRows) {
+        let count = row.cells.length;
+        while (count > 0 && !cellHasRenderableContent(row.cells[count - 1]))
+            count -= 1;
+        best = Math.max(best, count || row.cells.length);
+    }
+    return Math.max(best, 1);
+}
+function inferColumnMeta(rawRows, expectedColumnCount, tableWidthTwips) {
+    const safeCount = Math.max(expectedColumnCount, 1);
+    const weights = new Array(safeCount).fill(1);
+    for (const row of rawRows) {
+        const cells = row.cells.slice(0, safeCount);
+        for (let index = 0; index < cells.length; index += 1) {
+            const textLength = cells[index].paragraphs.map((block) => block.text.trim().length).join('').length;
+            if (textLength > 0)
+                weights[index] = Math.max(weights[index], Math.min(textLength, 32));
         }
     }
-    if (pendingCellParagraphs.length) {
-        pendingRow.cells.push({ id: uniqueId('cell'), paragraphs: pendingCellParagraphs.map(paragraphToBlock), meta: null });
+    const totalWeight = weights.reduce((sum, value) => sum + value, 0) || safeCount;
+    const width = tableWidthTwips > 0 ? tableWidthTwips : safeCount * 1440;
+    let cursor = 0;
+    return weights.map((weight, index) => {
+        const nextCursor = index === safeCount - 1 ? width : cursor + Math.round((width * weight) / totalWeight);
+        const meta = {
+            index,
+            width: nextCursor - cursor,
+            leftBoundary: cursor,
+            rightBoundary: nextCursor,
+            borders: {},
+        };
+        cursor = nextCursor;
+        return meta;
+    });
+}
+function applyEdgeVerticalMergeHints(rows) {
+    for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+        const row = rows[rowIndex];
+        const contentIndices = row.cells.map((cell, index) => (cellHasRenderableContent(cell) ? index : -1)).filter((index) => index >= 0);
+        if (!contentIndices.length || contentIndices.length === row.cells.length)
+            continue;
+        const firstContent = contentIndices[0];
+        const lastContent = contentIndices[contentIndices.length - 1];
+        const candidates = [
+            ...Array.from({ length: firstContent }, (_, index) => index),
+            ...Array.from({ length: Math.max(0, row.cells.length - lastContent - 1) }, (_, index) => lastContent + 1 + index),
+        ];
+        for (const columnIndex of candidates) {
+            const cell = row.cells[columnIndex];
+            if (!cell || cellHasRenderableContent(cell))
+                continue;
+            const above = rows[rowIndex - 1].cells[columnIndex];
+            if (!above)
+                continue;
+            if ((above.meta?.vertMerge || 0) === 1) {
+                cell.meta = { ...(cell.meta || { index: columnIndex }), vertMerge: 1 };
+                continue;
+            }
+            if (!cellHasRenderableContent(above))
+                continue;
+            above.meta = { ...(above.meta || { index: columnIndex }), vertMerge: Math.max(above.meta?.vertMerge || 0, 2) };
+            cell.meta = { ...(cell.meta || { index: columnIndex }), vertMerge: 1 };
+        }
     }
-    if (pendingRow.cells.length) {
-        rows.push({ id: uniqueId('row'), cells: pendingRow.cells, state: tableParagraphs[0]?.tableState || tablePropsToState([]), gridWidthTwips: 0 });
+}
+function isTableCandidateParagraph(paragraph) {
+    return paragraph.terminator === DOC_CONTROL.cellMark
+        || paragraph.paraState.inTable
+        || paragraph.paraState.innerTableCell
+        || paragraph.paraState.tableRowEnd
+        || paragraph.paraState.innerTableRowEnd;
+}
+function buildTableBlock(tableParagraphs) {
+    const rawRows = [];
+    let pendingRowCells = [];
+    let pendingRowParagraphs = [];
+    let pendingCellParagraphs = [];
+    const flushCell = () => {
+        if (!pendingCellParagraphs.length)
+            return;
+        pendingRowCells.push({
+            id: uniqueId('cell'),
+            paragraphs: pendingCellParagraphs.map(paragraphToBlock),
+            meta: null,
+        });
+        pendingCellParagraphs = [];
+    };
+    const flushRow = (rowEndParagraph) => {
+        if (pendingCellParagraphs.length)
+            flushCell();
+        if (!pendingRowCells.length && !pendingRowParagraphs.length)
+            return;
+        rawRows.push({
+            cells: pendingRowCells,
+            rowEndParagraph,
+            paragraphs: pendingRowParagraphs,
+        });
+        pendingRowCells = [];
+        pendingRowParagraphs = [];
+    };
+    for (const paragraph of tableParagraphs) {
+        pendingRowParagraphs.push(paragraph);
+        pendingCellParagraphs.push(paragraph);
+        const endsCell = paragraph.terminator === DOC_CONTROL.cellMark || paragraph.paraState.tableRowEnd || paragraph.paraState.innerTableRowEnd;
+        const endsRow = paragraph.paraState.tableRowEnd || paragraph.paraState.innerTableRowEnd;
+        if (endsCell)
+            flushCell();
+        if (endsRow)
+            flushRow(paragraph);
     }
+    flushRow(null);
+    const templateState = rawRows.reduce((best, row) => {
+        const candidate = row.rowEndParagraph?.tableState || null;
+        return tableStateScore(candidate) >= tableStateScore(best) ? candidate : best;
+    }, null);
+    const templateCellMeta = templateState ? applyTableStateToCells(templateState) : [];
+    const expectedColumnCount = inferExpectedColumnCount(rawRows, templateCellMeta.length);
+    const inferredCellMeta = inferColumnMeta(rawRows, expectedColumnCount, templateState?.tableWidth?.wWidth || 0);
+    const rows = rawRows.map((rawRow) => {
+        const rowState = buildEffectiveTableState(templateState, rawRow.rowEndParagraph?.tableState || null);
+        let cells = rawRow.cells.map((cell) => ({ ...cell, meta: cell.meta ? cloneTableStateValue(cell.meta) : null }));
+        while (cells.length > expectedColumnCount && !cellHasRenderableContent(cells[cells.length - 1]))
+            cells.pop();
+        while (cells.length < expectedColumnCount)
+            cells.push(createEmptyCellBlock());
+        const rowCellMeta = applyTableStateToCells(rowState);
+        const cellMetaSource = rowCellMeta.length ? rowCellMeta : templateCellMeta.length ? templateCellMeta : inferredCellMeta;
+        cells.forEach((cell, index) => {
+            cell.meta = cloneTableStateValue(cellMetaSource[index] || inferredCellMeta[index] || { index });
+        });
+        const gridWidthTwips = cellMetaSource.length
+            ? Math.max(0, (cellMetaSource[cellMetaSource.length - 1].rightBoundary || 0) - (cellMetaSource[0].leftBoundary || 0))
+            : (rowState.tableWidth?.wWidth || 0);
+        return {
+            id: uniqueId('row'),
+            cells,
+            state: rowState,
+            gridWidthTwips,
+        };
+    });
+    applyEdgeVerticalMergeHints(rows);
     finalizeTableGrid(rows);
-    const gridWidthTwips = rows.find((row) => row.gridWidthTwips)?.gridWidthTwips || 0;
-    const depth = Math.max(...tableParagraphs.map((paragraph) => getTableDepth(paragraph.paraState)), 1);
+    const firstParagraph = tableParagraphs[0];
+    const lastParagraph = tableParagraphs[tableParagraphs.length - 1];
+    const gridWidthTwips = rows.find((row) => row.gridWidthTwips)?.gridWidthTwips || templateState?.tableWidth?.wWidth || 0;
+    const depthCandidates = rawRows.map((row) => getTableDepth(row.rowEndParagraph?.paraState || tableParagraphs[0].paraState)).filter((value) => value > 0);
+    const depth = depthCandidates.length ? Math.max(...depthCandidates) : 1;
     return {
         type: 'table',
         id: uniqueId('table'),
+        cpStart: firstParagraph?.cpStart || 0,
+        cpEnd: lastParagraph?.cpEnd || firstParagraph?.cpEnd || 0,
         depth,
         rows,
-        state: rows[0]?.state || tablePropsToState([]),
+        state: rows[0]?.state || templateState || tablePropsToState([]),
         gridWidthTwips,
     };
 }
@@ -558,18 +758,23 @@ function buildBlocks(paragraphs) {
     let index = 0;
     while (index < paragraphs.length) {
         const paragraph = paragraphs[index];
-        const depth = getTableDepth(paragraph.paraState);
-        if (depth <= 0) {
+        if (!isTableCandidateParagraph(paragraph)) {
             blocks.push(paragraphToBlock(paragraph));
             index += 1;
             continue;
         }
         const tableParagraphs = [];
-        while (index < paragraphs.length && getTableDepth(paragraphs[index].paraState) > 0) {
+        while (index < paragraphs.length && isTableCandidateParagraph(paragraphs[index])) {
             tableParagraphs.push(paragraphs[index]);
             index += 1;
         }
-        blocks.push(buildTableBlock(tableParagraphs));
+        if (tableParagraphs.some((item) => item.terminator === DOC_CONTROL.cellMark || item.paraState.tableRowEnd || item.paraState.innerTableRowEnd)) {
+            blocks.push(buildTableBlock(tableParagraphs));
+        }
+        else {
+            for (const item of tableParagraphs)
+                blocks.push(paragraphToBlock(item));
+        }
     }
     return blocks;
 }

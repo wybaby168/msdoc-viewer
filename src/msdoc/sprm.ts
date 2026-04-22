@@ -157,7 +157,8 @@ export const SprmCodes = {
   sprmTSetShdOdd: 0xd62e,
   sprmTSetBrc: 0xd62f,
   sprmTCellPadding: 0xd632,
-  sprmTCellPaddingDefault: 0xd633,
+  sprmTCellSpacingDefault: 0xd633,
+  sprmTCellPaddingDefault: 0xd634,
   sprmTCellWidth: 0xd635,
   sprmTFitText: 0xf636,
   sprmTFCellNoWrap: 0xd639,
@@ -178,6 +179,7 @@ const VARIABLE_OPERAND_CODES = new Set<number>([
   SprmCodes.sprmTSetShd,
   SprmCodes.sprmTSetShdOdd,
   SprmCodes.sprmTCellPadding,
+  SprmCodes.sprmTCellSpacingDefault,
   SprmCodes.sprmTCellPaddingDefault,
   SprmCodes.sprmTCellWidth,
   SprmCodes.sprmTVertAlign,
@@ -291,6 +293,20 @@ function parseRangeWidthOperand(bytes: Uint8Array): RangeWidthOperand | null {
     cb,
     range: parseItcFirstLim(bytes, 1),
     ftsWidth: bytes[3] ?? 0,
+    width,
+    wWidth: width,
+  };
+}
+
+function parseCssaOperand(bytes: Uint8Array): RangeWidthOperand | null {
+  if (bytes.length < 7) return null;
+  const cb = bytes[0] ?? 0;
+  const width = u16(bytes, 5);
+  return {
+    cb,
+    range: parseItcFirstLim(bytes, 1),
+    grfbrc: bytes[3] ?? 0,
+    ftsWidth: bytes[4] ?? 0,
     width,
     wWidth: width,
   };
@@ -500,8 +516,9 @@ export function decodeSprm(sprm: number, operandBytes: Uint8Array): DecodedPrope
     case SprmCodes.sprmTSetShdOdd: return setMeta('table', 'setShading', parseRangeValueOperand(bytes), raw, bytes);
     case SprmCodes.sprmTSetBrc80:
     case SprmCodes.sprmTSetBrc: return setMeta('table', 'setBorder', parseRangeBrcOperand(bytes), raw, bytes);
-    case SprmCodes.sprmTCellPadding:
-    case SprmCodes.sprmTCellPaddingDefault: return setMeta('table', 'cellPadding', parseRangeWidthOperand(bytes), raw, bytes);
+    case SprmCodes.sprmTCellPadding: return setMeta('table', 'cellPadding', parseCssaOperand(bytes), raw, bytes);
+    case SprmCodes.sprmTCellSpacingDefault: return setMeta('table', 'cellSpacing', parseCssaOperand(bytes), raw, bytes);
+    case SprmCodes.sprmTCellPaddingDefault: return setMeta('table', 'cellPadding', parseCssaOperand(bytes), raw, bytes);
     case SprmCodes.sprmTCellWidth: return setMeta('table', 'cellWidth', parseRangeWidthOperand(bytes), raw, bytes);
     case SprmCodes.sprmTFitText: return setMeta('table', 'fitText', parseRangeValueOperand(bytes), raw, bytes);
     case SprmCodes.sprmTFCellNoWrap: return setMeta('table', 'cellNoWrap', parseRangeValueOperand(bytes), raw, bytes);
