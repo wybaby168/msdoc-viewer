@@ -5,8 +5,10 @@ import { DOC_CONTROL } from './constants.js';
 import { parseFib } from './fib.js';
 import { readChpxRuns, readPapxRuns } from './fkp.js';
 import { parseFonts } from './fonts.js';
+import { parseDrawingGroup, resolveHeaderAnchorBinding } from './drawings.js';
 import { extractObjectPool, extractPictureAsset } from './objects.js';
 import { readShapeAnchors } from './shapes.js';
+import { findSectionIndex, readSections } from './sections.js';
 import { buildHeaderStoryDescriptors, buildStoryWindows, parseCommentRefMeta, parseSttbfRMark, parseTextboxMeta, parseXstArray, readFixedPlc, } from './stories.js';
 import { applyTableStateToCells, charPropsToState, getTableDepth, paraPropsToState, tablePropsToState, } from './properties.js';
 import { mergePropertyArrays, parseStyles, splitPropertiesByKind } from './styles.js';
@@ -125,6 +127,20 @@ function getObjectPoolInfo(objectPool, pictureOffset) {
             return objectPool.get(key) || null;
     }
     return null;
+}
+function applyDrawingInfoToShapeAnchor(anchor, drawingInfo) {
+    const info = drawingInfo.get(anchor.shapeId);
+    if (!info)
+        return anchor;
+    return {
+        ...anchor,
+        drawingName: info.name,
+        drawingDescription: info.description,
+        shapeTypeCode: info.shapeTypeCode,
+        blipRef: info.blipRef,
+        imageAssetId: info.imageAssetId,
+        imageAsset: info.imageAsset,
+    };
 }
 function createAssetResolver(dataBytes, objectPool, assets, usedAttachmentNames, assetCache, options = {}) {
     return function resolveAsset(charState) {
@@ -412,7 +428,7 @@ function buildRangesForCpInterval(cpStart, cpEnd, documentText, papxRuns) {
         properties: [],
     }));
 }
-function buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}) {
+function buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}, resolveSectionIndex = () => 0) {
     const ranges = buildRangesForCpInterval(cpStart, cpEnd, documentText, papxRuns);
     const chpxCursor = { index: 0 };
     return ranges.map((range) => {
@@ -421,11 +437,13 @@ function buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes
         const paragraphText = terminatorCandidate && rawParagraphText.endsWith(terminatorCandidate)
             ? rawParagraphText.slice(0, -1)
             : rawParagraphText;
-        return buildParagraphModel({ ...range, terminator: terminatorCandidate }, paragraphText, styles, fonts, chpxRuns, resolveAsset, chpxCursor, revisionAuthors, inlineContext);
+        const model = buildParagraphModel({ ...range, terminator: terminatorCandidate }, paragraphText, styles, fonts, chpxRuns, resolveAsset, chpxCursor, revisionAuthors, inlineContext);
+        model.sectionIndex = resolveSectionIndex(range.cpStart);
+        return model;
     });
 }
-function parseIntervalToContent(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}) {
-    const paragraphs = buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext);
+function parseIntervalToContent(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}, resolveSectionIndex = () => 0) {
+    const paragraphs = buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext, resolveSectionIndex);
     return {
         paragraphs,
         blocks: buildBlocks(paragraphs),
@@ -494,6 +512,7 @@ function paragraphToBlock(paragraph) {
         id: paragraph.id,
         cpStart: paragraph.cpStart,
         cpEnd: paragraph.cpEnd,
+        sectionIndex: paragraph.sectionIndex,
         styleId: paragraph.styleId,
         styleName: paragraph.styleName,
         paraState: paragraph.paraState,
@@ -747,6 +766,7 @@ function buildTableBlock(tableParagraphs) {
         id: uniqueId('table'),
         cpStart: firstParagraph?.cpStart || 0,
         cpEnd: lastParagraph?.cpEnd || firstParagraph?.cpEnd || 0,
+        sectionIndex: firstParagraph?.sectionIndex,
         depth,
         rows,
         state: rows[0]?.state || templateState || tablePropsToState([]),
@@ -872,6 +892,7 @@ function buildTextboxItems(header, storyCpBase, entries, parseContent, shapeById
             reusable: meta.reusable,
             shapeId: meta.shapeId || undefined,
             shape: meta.shapeId ? shapeById.get(meta.shapeId) : undefined,
+            sectionIndex: meta.shapeId ? shapeById.get(meta.shapeId)?.sectionIndex : undefined,
             blocks: content.blocks,
             text: content.text,
         };
@@ -944,6 +965,8 @@ export function parseMsDoc(input, options = {}) {
     const pieceTexts = buildPieceTextCache(wordBytes, clx);
     const documentText = pieceTexts.join('');
     const storyWindows = buildStoryWindows(fib.fibRgLw, documentText.length);
+    const sections = readSections(wordBytes, tableBytes, fib.fibRgFcLcb, storyWindows.main.length);
+    const resolveMainSectionIndex = (cp) => findSectionIndex(sections, cp);
     const styles = parseStyles(tableBytes, fib.fibRgFcLcb);
     const fonts = parseFonts(tableBytes, fib.fibRgFcLcb);
     const revisionAuthors = parseSttbfRMark(tableBytes, fib.fibRgFcLcb);
@@ -956,10 +979,19 @@ export function parseMsDoc(input, options = {}) {
         .map((run) => ({ ...run, cpEnd: Math.min(run.cpEnd, documentText.length) }));
     const objectPool = extractObjectPool(cfb);
     const assets = [];
+    const drawingGroup = parseDrawingGroup(tableBytes, wordBytes, fib.fibRgFcLcb, dataBytes);
+    warnings.push(...drawingGroup.warnings);
+    for (const asset of drawingGroup.assets)
+        assets.push(asset);
     const usedAttachmentNames = new Set();
     const assetCache = new Map();
     const resolveAsset = createAssetResolver(dataBytes, objectPool, assets, usedAttachmentNames, assetCache, options);
-    const parseContent = (cpStart, cpEnd, inlineContext = {}) => parseIntervalToContent(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext);
+    const parseContent = (cpIntervalStart, cpIntervalEnd, inlineContext = {}) => {
+        const resolveSectionIndex = cpIntervalStart >= storyWindows.main.cpStart && cpIntervalEnd <= storyWindows.main.cpEnd
+            ? resolveMainSectionIndex
+            : () => 0;
+        return parseIntervalToContent(cpIntervalStart, cpIntervalEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext, resolveSectionIndex);
+    };
     const footnoteTextEntries = readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcffndTxt, fib.fibRgFcLcb.lcbPlcffndTxt, 0);
     const footnoteRefEntries = readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcffndRef, fib.fibRgFcLcb.lcbPlcffndRef, 2).map((entry) => ({ index: entry.index, cpStart: entry.cpStart }));
     const { items: footnoteItems, refMap: footnoteRefMap } = buildNoteItems('footnote', storyWindows.footnote.cpStart, footnoteTextEntries, footnoteRefEntries, parseContent);
@@ -978,20 +1010,34 @@ export function parseMsDoc(input, options = {}) {
         noteRefs,
         commentRefs: commentRefMap,
     });
-    const mainShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.main.cpStart, 'main');
-    const headerShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.header.cpStart, 'header');
+    const headerStoryDescriptors = buildHeaderStoryDescriptors(tableBytes, fib.fibRgFcLcb, storyWindows.header);
+    const mainShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.main.cpStart, 'main')
+        .map((anchor) => ({ ...anchor, sectionIndex: resolveMainSectionIndex(anchor.anchorCp) }))
+        .map((anchor) => applyDrawingInfoToShapeAnchor(anchor, drawingGroup.shapes));
+    const headerShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.header.cpStart, 'header')
+        .map((anchor) => {
+        const binding = resolveHeaderAnchorBinding(headerStoryDescriptors, anchor.anchorCp);
+        return {
+            ...applyDrawingInfoToShapeAnchor(anchor, drawingGroup.shapes),
+            sectionIndex: binding.sectionIndex ?? anchor.sectionIndex,
+            headerKind: binding.kind,
+            headerRole: binding.role,
+        };
+    });
     const mainShapeById = new Map(mainShapeAnchors.map((anchor) => [anchor.shapeId, anchor]));
     const headerShapeById = new Map(headerShapeAnchors.map((anchor) => [anchor.shapeId, anchor]));
-    const headerStories = buildHeaderStories(buildHeaderStoryDescriptors(tableBytes, fib.fibRgFcLcb, storyWindows.header), parseContent);
+    const headerStories = buildHeaderStories(headerStoryDescriptors, parseContent);
     const textboxItems = buildTextboxItems(false, storyWindows.textbox.cpStart, readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcftxbxTxt, fib.fibRgFcLcb.lcbPlcftxbxTxt, 22), parseContent, mainShapeById);
     const headerTextboxItems = buildTextboxItems(true, storyWindows.headerTextbox.cpStart, readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcfHdrtxbxTxt, fib.fibRgFcLcb.lcbPlcfHdrtxbxTxt, 22), parseContent, headerShapeById);
     const floatingShapes = mainShapeAnchors.filter((anchor) => !anchor.matchedTextboxId);
     const headerFloatingShapes = headerShapeAnchors.filter((anchor) => !anchor.matchedTextboxId);
-    if (floatingShapes.length || headerFloatingShapes.length) {
-        pushWarning(warnings, 'Floating shape anchors were parsed and exposed as structured metadata cards when no textbox story was available', {
+    const unresolvedFloatingShapes = floatingShapes.filter((anchor) => !anchor.imageAsset);
+    const unresolvedHeaderFloatingShapes = headerFloatingShapes.filter((anchor) => !anchor.imageAsset);
+    if (unresolvedFloatingShapes.length || unresolvedHeaderFloatingShapes.length) {
+        pushWarning(warnings, 'Some floating shapes were parsed but still require metadata-card fallback because neither a textbox story nor a resolvable image BLIP was available', {
             code: 'floating-shapes-partial-render',
             severity: 'info',
-            details: { mainShapes: floatingShapes.length, headerShapes: headerFloatingShapes.length },
+            details: { mainShapes: unresolvedFloatingShapes.length, headerShapes: unresolvedHeaderFloatingShapes.length },
         });
     }
     const blocks = [...mainContent.blocks];
@@ -1086,6 +1132,7 @@ export function parseMsDoc(input, options = {}) {
                 headerTextboxes: headerTextboxItems.length,
                 shapes: mainShapeAnchors.length,
                 headerShapes: headerShapeAnchors.length,
+                sections: sections.length,
             },
         },
         fonts: fonts.fonts,
@@ -1096,6 +1143,7 @@ export function parseMsDoc(input, options = {}) {
             basedOn: style.stdfBase?.istdBase,
             next: style.stdfBase?.istdNext,
         })),
+        sections,
         blocks,
         assets,
     };

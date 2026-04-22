@@ -1,6 +1,6 @@
 {
   "name": "msdoc-viewer",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Strict TypeScript MS-DOC (.doc) reader and HTML/CSS renderer with optional Web Worker support.",
   "type": "module",
   "exports": {

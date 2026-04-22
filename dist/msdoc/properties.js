@@ -1,11 +1,12 @@
 import { JC_MAP, UNDERLINE_MAP, VERTICAL_ALIGN_MAP } from './constants.js';
 export function propertyArrayToMaps(properties) {
-    const out = { char: {}, para: {}, table: {} };
+    const out = { char: {}, para: {}, table: {}, section: {} };
     for (const prop of properties || []) {
         if (prop.kind === 'unknown')
             continue;
         const bucket = out[prop.kind];
-        bucket[prop.name] = prop.value;
+        if (bucket)
+            bucket[prop.name] = prop.value;
     }
     return out;
 }

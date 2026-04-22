@@ -132,10 +132,16 @@ export function parseCommentRefMeta(data) {
 }
 export function parseTextboxMeta(data) {
     const reader = new BinaryReader(data);
+    const reserved = reader.u32(0);
+    // FTXBXS records are 22 bytes in the classic .doc binary format. The linked
+    // OfficeArt shape id is stored near the tail of the structure rather than at
+    // offset 4; older builds in this repository read offset 4 and therefore lost
+    // the header-shape/textbox association entirely.
+    const shapeId = data.length >= 18 ? reader.u32(14) : 0;
     return {
-        reusable: Boolean(reader.u32(0) & 0x1),
-        reserved: reader.u32(0),
-        shapeId: reader.u32(4),
+        reusable: Boolean(reserved & 0x1),
+        reserved,
+        shapeId,
     };
 }
 const HEADER_SYSTEM_ROLES = [

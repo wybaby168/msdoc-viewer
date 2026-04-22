@@ -12,12 +12,13 @@ export function propertyArrayToMaps(properties: DecodedProperty[]): {
   char: Record<string, unknown>;
   para: Record<string, unknown>;
   table: Record<string, unknown>;
+  section: Record<string, unknown>;
 } {
-  const out: { char: Record<string, unknown>; para: Record<string, unknown>; table: Record<string, unknown> } = { char: {}, para: {}, table: {} };
+  const out: { char: Record<string, unknown>; para: Record<string, unknown>; table: Record<string, unknown>; section: Record<string, unknown> } = { char: {}, para: {}, table: {}, section: {} };
   for (const prop of properties || []) {
     if (prop.kind === 'unknown') continue;
     const bucket = out[prop.kind];
-    bucket[prop.name] = prop.value;
+    if (bucket) bucket[prop.name] = prop.value;
   }
   return out;
 }

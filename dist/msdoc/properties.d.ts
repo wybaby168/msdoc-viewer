@@ -3,6 +3,7 @@ export declare function propertyArrayToMaps(properties: DecodedProperty[]): {
     char: Record<string, unknown>;
     para: Record<string, unknown>;
     table: Record<string, unknown>;
+    section: Record<string, unknown>;
 };
 export declare function charPropsToState(properties: DecodedProperty[]): CharState;
 export declare function paraPropsToState(properties: DecodedProperty[]): ParaState;

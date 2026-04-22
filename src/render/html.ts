@@ -8,6 +8,7 @@ import type {
   CharState,
   CommentsBlock,
   CssStyleObject,
+  ImageAsset,
   HeaderFooterStory,
   HeadersBlock,
   InlineNode,
@@ -50,12 +51,14 @@ type ChromeKind = 'header' | 'footer';
 
 interface ChromeEntry {
   kind: ChromeKind;
-  source: 'story' | 'textbox';
+  source: 'story' | 'textbox' | 'shape';
   blocks: Array<ParagraphBlock | TableBlock>;
   text: string;
   labels: string[];
   sections: number[];
   pageNumberLike: boolean;
+  shape?: ShapeAnchorInfo;
+  html?: string;
 }
 
 interface FloatingPlacementResult {
@@ -158,7 +161,9 @@ function signatureForBlocks(blocks: Array<ParagraphBlock | TableBlock>, text: st
 }
 
 function mergeChromeEntry(target: Map<string, ChromeEntry>, entry: ChromeEntry): void {
-  const signature = `${entry.kind}|${signatureForBlocks(entry.blocks, entry.text)}`;
+  const signature = entry.source === 'shape'
+    ? `${entry.kind}|shape:${entry.shape?.shapeId || entry.text || entry.labels.join('|')}`
+    : `${entry.kind}|${signatureForBlocks(entry.blocks, entry.text)}`;
   const current = target.get(signature);
   if (!current) {
     target.set(signature, {
@@ -175,6 +180,8 @@ function mergeChromeEntry(target: Map<string, ChromeEntry>, entry: ChromeEntry):
     if (!current.sections.includes(section)) current.sections.push(section);
   }
   current.pageNumberLike = current.pageNumberLike || entry.pageNumberLike;
+  if (!current.html && entry.html) current.html = entry.html;
+  if (!current.shape && entry.shape) current.shape = entry.shape;
 }
 
 function storyKind(role: HeaderFooterStory['role']): ChromeKind | null {
@@ -183,8 +190,31 @@ function storyKind(role: HeaderFooterStory['role']): ChromeKind | null {
   return null;
 }
 
-function collectChromeEntries(headersBlock: HeadersBlock | null, headerTextboxes: TextboxItem[]): { headers: ChromeEntry[]; footers: ChromeEntry[] } {
+function headerShapeKind(shape: ShapeAnchorInfo): ChromeKind {
+  if (shape.headerKind) return shape.headerKind;
+  if (shape.headerRole) return shape.headerRole.endsWith('Footer') ? 'footer' : 'header';
+  return shape.boundsTwips.top > 7920 ? 'footer' : 'header';
+}
+
+function getImageAsset(assetById: Map<string, ImageAsset>, shape: ShapeAnchorInfo | undefined | null): ImageAsset | null {
+  if (!shape?.imageAssetId) return null;
+  return assetById.get(shape.imageAssetId) || null;
+}
+
+interface ChromeCollection {
+  headers: ChromeEntry[];
+  footers: ChromeEntry[];
+  usedShapeIds: Set<string>;
+}
+
+function collectChromeEntries(
+  headersBlock: HeadersBlock | null,
+  headerTextboxes: TextboxItem[],
+  headerShapes: ShapeAnchorInfo[],
+  assetById: Map<string, ImageAsset>,
+): ChromeCollection {
   const map = new Map<string, ChromeEntry>();
+  const usedShapeIds = new Set<string>();
 
   for (const story of headersBlock?.stories || []) {
     const kind = storyKind(story.role);
@@ -205,15 +235,36 @@ function collectChromeEntries(headersBlock: HeadersBlock | null, headerTextboxes
   for (const item of headerTextboxes) {
     if (!blockListHasRenderableContent(item.blocks)) continue;
     const text = blockListText(item.blocks) || item.text;
-    const kind: ChromeKind = isPageNumberLike(item.text || text) ? 'footer' : 'header';
+    const kind: ChromeKind = item.shape?.headerKind
+      || (item.shape?.headerRole ? (item.shape.headerRole.endsWith('Footer') ? 'footer' : 'header') : undefined)
+      || (isPageNumberLike(item.text || text) ? 'footer' : 'header');
     mergeChromeEntry(map, {
       kind,
       source: 'textbox',
       blocks: item.blocks,
       text,
       labels: [item.label],
-      sections: [],
+      sections: item.sectionIndex != null ? [item.sectionIndex + 1] : [],
       pageNumberLike: isPageNumberLike(item.text || text),
+      shape: item.shape,
+    });
+  }
+
+  for (const shape of headerShapes) {
+    const asset = getImageAsset(assetById, shape);
+    if (!asset) continue;
+    const kind = headerShapeKind(shape);
+    usedShapeIds.add(shape.id);
+    mergeChromeEntry(map, {
+      kind,
+      source: 'shape',
+      blocks: [],
+      text: `${shape.drawingName || shape.drawingDescription || 'shape'} ${shape.shapeId}`,
+      labels: [shape.drawingName || shape.drawingDescription || `shape ${shape.shapeId}`],
+      sections: shape.sectionIndex != null ? [shape.sectionIndex + 1] : [],
+      pageNumberLike: false,
+      shape,
+      html: renderAssetImage(asset, shape, 'msdoc-page-chrome-asset'),
     });
   }
 
@@ -221,6 +272,7 @@ function collectChromeEntries(headersBlock: HeadersBlock | null, headerTextboxes
   return {
     headers: values.filter((entry) => entry.kind === 'header'),
     footers: values.filter((entry) => entry.kind === 'footer'),
+    usedShapeIds,
   };
 }
 
@@ -382,6 +434,19 @@ function renderImageNode(node: Extract<InlineNode, { type: 'image' }>): string {
   return img;
 }
 
+
+function renderStandaloneImageAsset(asset: ImageAsset): string {
+  const src = sanitizeImageSource(asset.sourceUrl) || sanitizeImageSource(asset.dataUrl);
+  if (!src || asset.displayable === false) {
+    const fallbackHref = sanitizeAssetHref(asset.dataUrl) || sanitizeAssetHref(asset.sourceUrl);
+    const label = escapeHtml(String(asset.meta?.linkedPath || asset.mime || 'image'));
+    return fallbackHref
+      ? `<a class="msdoc-attachment msdoc-image-fallback" href="${escapeHtml(fallbackHref)}" target="_blank" rel="noreferrer noopener">🖼 ${label}</a>`
+      : `<span class="msdoc-image-fallback">🖼 ${label}</span>`;
+  }
+  return `<img class="msdoc-image" src="${escapeHtml(src)}" alt="" style="display:block;max-width:100%;height:auto;margin:0 auto">`;
+}
+
 function renderAttachmentNode(node: Extract<InlineNode, { type: 'attachment' }>): string {
   const label = escapeHtml(node.asset.name || 'embedded-file');
   const inner = `<a class="msdoc-attachment" href="${escapeHtml(node.asset.dataUrl)}" download="${label}">📎 ${label}</a>`;
@@ -424,8 +489,16 @@ function renderParagraphBlock(block: ParagraphBlock, options: { inline?: boolean
   const body = renderInlineNodes(block.inlines || []);
   const empty = body || '<br>';
   const classNames = ['msdoc-paragraph'];
+  if (!options.inline) classNames.push('msdoc-flow-block');
   if (block.styleName) classNames.push(`msdoc-style-${slugify(block.styleName)}`);
-  return `<${tag} class="${classNames.join(' ')}"${style ? ` style="${style}"` : ''}>${empty}</${tag}>`;
+  const attrs: string[] = [];
+  if (!options.inline) {
+    attrs.push(` data-section-index="${block.sectionIndex ?? 0}"`);
+    attrs.push(` data-cp-start="${block.cpStart}"`);
+    attrs.push(` data-cp-end="${block.cpEnd}"`);
+    if (block.paraState.pageBreakBefore) attrs.push(' data-page-break-before="1"');
+  }
+  return `<${tag} class="${classNames.join(' ')}"${style ? ` style="${style}"` : ''}${attrs.join('')}>${empty}</${tag}>`;
 }
 
 function cellStyle(cell: TableCellBlock): CssStyleObject {
@@ -511,10 +584,10 @@ function renderTableBlock(block: TableBlock): string {
     return `<tr class="msdoc-row"${rowStyle}>${cells}</tr>`;
   }).join('');
 
-  return `<table class="msdoc-table msdoc-table-depth-${block.depth}" style="${styleObjectToCss(tableStyle(block))}"><tbody>${rows}</tbody></table>`;
+  return `<table class="msdoc-table msdoc-flow-block msdoc-table-depth-${block.depth}" style="${styleObjectToCss(tableStyle(block))}" data-section-index="${block.sectionIndex ?? 0}" data-cp-start="${block.cpStart}" data-cp-end="${block.cpEnd}"><tbody>${rows}</tbody></table>`;
 }
 
-function renderBlockList(blocks: Array<ParagraphBlock | TableBlock>): string {
+export function renderBlockList(blocks: Array<ParagraphBlock | TableBlock>): string {
   return blocks.map((block) => block.type === 'paragraph' ? renderParagraphBlock(block) : renderTableBlock(block)).join('');
 }
 
@@ -563,6 +636,7 @@ function renderShapeMeta(shape: ShapeAnchorInfo): string {
     shape.behindText ? 'behind text' : 'in front of text',
     shape.anchorLocked ? 'anchor locked' : '',
     shape.matchedTextboxId ? 'textbox linked' : '',
+    shape.imageAssetId ? 'image bound' : '',
   ].filter(Boolean).map((label) => `<span class="msdoc-badge">${escapeHtml(label)}</span>`).join(' ');
   const rows = [
     ['Shape ID', String(shape.shapeId)],
@@ -570,7 +644,12 @@ function renderShapeMeta(shape: ShapeAnchorInfo): string {
     ['Origin', `${shape.anchorX} / ${shape.anchorY}`],
     ['Wrap', `${shape.wrapStyle} / ${shape.wrapSide}`],
     ['Bounds', `${formatPxValue(leftPx)} × ${formatPxValue(topPx)} → ${formatPxValue(widthPx)} × ${formatPxValue(heightPx)}`],
-  ].map(([label, value]) => `<div class="msdoc-shape-meta-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('');
+    shape.shapeTypeCode != null ? ['Type', String(shape.shapeTypeCode)] : null,
+    shape.headerRole ? ['Role', shape.headerRole] : null,
+    shape.drawingName ? ['Name', shape.drawingName] : null,
+    shape.drawingDescription ? ['Description', shape.drawingDescription] : null,
+    shape.blipRef ? ['BLIP', `${shape.blipRef.kind} #${shape.blipRef.index}`] : null,
+  ].filter((row): row is [string, string] => Boolean(row)).map(([label, value]) => `<div class="msdoc-shape-meta-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('');
   return `${badges ? `<div class="msdoc-shape-badges">${badges}</div>` : ''}<dl class="msdoc-shape-meta">${rows}</dl>`;
 }
 
@@ -605,15 +684,34 @@ function isImageOnlyParagraph(block: ParagraphBlock): boolean {
 }
 
 function renderFloatingImage(shape: ShapeAnchorInfo, block: ParagraphBlock): string {
-  return `<figure class="msdoc-floating msdoc-floating-image" style="${styleObjectToCss(floatingStyle(shape))}">${renderInlineNodes(block.inlines)}</figure>`;
+  return `<figure class="msdoc-floating msdoc-floating-image msdoc-flow-block" style="${styleObjectToCss(floatingStyle(shape))}" data-msdoc-floating="1" data-shape-id="${shape.shapeId}" data-section-index="${shape.sectionIndex ?? block.sectionIndex ?? 0}" data-anchor-cp="${shape.anchorCp}">${renderInlineNodes(block.inlines)}</figure>`;
 }
 
-function renderFloatingTextbox(shape: ShapeAnchorInfo, item: TextboxItem): string {
-  return `<aside class="msdoc-floating msdoc-floating-textbox msdoc-textboxes" style="${styleObjectToCss(floatingStyle(shape))}"><div class="msdoc-floating-title">Textbox</div><div class="msdoc-story-card-meta">textbox linked</div><div class="msdoc-floating-body">${renderBlockList(item.blocks)}</div></aside>`;
+function renderAssetImage(asset: ImageAsset, shape: ShapeAnchorInfo, extraClass = ''): string {
+  const src = sanitizeImageSource(asset.sourceUrl) || sanitizeImageSource(asset.dataUrl);
+  if (!src || asset.displayable === false) {
+    const fallbackHref = sanitizeAssetHref(asset.dataUrl) || sanitizeAssetHref(asset.sourceUrl);
+    const label = escapeHtml(String(asset.meta?.fbseName || asset.meta?.linkedPath || asset.mime || 'image'));
+    const inner = fallbackHref
+      ? `<a class="msdoc-attachment msdoc-image-fallback" href="${escapeHtml(fallbackHref)}" target="_blank" rel="noreferrer noopener">🖼 ${label}</a>`
+      : `<span class="msdoc-image-fallback">🖼 ${label}</span>`;
+    return `<figure class="msdoc-floating msdoc-floating-image ${extraClass}" style="${styleObjectToCss(floatingStyle(shape))}" data-msdoc-floating="1" data-shape-id="${shape.shapeId}" data-section-index="${shape.sectionIndex ?? 0}" data-anchor-cp="${shape.anchorCp}">${inner}</figure>`;
+  }
+  const img = `<img class="msdoc-image" src="${escapeHtml(src)}" alt="${escapeHtml(shape.drawingDescription || shape.drawingName || '')}" style="max-width:100%;height:auto;display:block;margin:0 auto">`;
+  return `<figure class="msdoc-floating msdoc-floating-image ${extraClass}" style="${styleObjectToCss(floatingStyle(shape))}" data-msdoc-floating="1" data-shape-id="${shape.shapeId}" data-section-index="${shape.sectionIndex ?? 0}" data-anchor-cp="${shape.anchorCp}">${img}</figure>`;
 }
 
-function renderFloatingShapePlaceholder(shape: ShapeAnchorInfo): string {
-  return `<aside class="msdoc-floating msdoc-floating-shape-placeholder msdoc-shapes" style="${styleObjectToCss(floatingStyle(shape))}"><div class="msdoc-floating-title">Floating shape</div>${renderShapeMeta(shape)}</aside>`;
+function renderFloatingTextbox(shape: ShapeAnchorInfo, item: TextboxItem, asset?: ImageAsset): string {
+  const preview = asset ? `<div class="msdoc-story-card-extra">${renderAssetImage(asset, shape)}</div>` : '';
+  return `<aside class="msdoc-floating msdoc-floating-textbox msdoc-textboxes msdoc-flow-block" style="${styleObjectToCss(floatingStyle(shape))}" data-msdoc-floating="1" data-shape-id="${shape.shapeId}" data-section-index="${shape.sectionIndex ?? item.sectionIndex ?? 0}" data-anchor-cp="${shape.anchorCp}"><div class="msdoc-floating-title">Textbox</div><div class="msdoc-story-card-meta">textbox linked</div>${preview}<div class="msdoc-floating-body">${renderBlockList(item.blocks)}</div></aside>`;
+}
+
+function renderFloatingShapePlaceholder(shape: ShapeAnchorInfo, assetById: Map<string, ImageAsset>): string {
+  const asset = shape.imageAssetId ? assetById.get(shape.imageAssetId) : undefined;
+  if (asset) {
+    return renderAssetImage(asset, shape, 'msdoc-flow-block');
+  }
+  return `<aside class="msdoc-floating msdoc-floating-shape-placeholder msdoc-shapes msdoc-flow-block" style="${styleObjectToCss(floatingStyle(shape))}" data-msdoc-floating="1" data-shape-id="${shape.shapeId}" data-section-index="${shape.sectionIndex ?? 0}" data-anchor-cp="${shape.anchorCp}"><div class="msdoc-floating-title">Floating shape</div>${renderShapeMeta(shape)}</aside>`;
 }
 
 function findAnchorIndex(blocks: MainBlock[], anchorCp: number): number {
@@ -621,13 +719,17 @@ function findAnchorIndex(blocks: MainBlock[], anchorCp: number): number {
   return index >= 0 ? index : Math.max(0, blocks.length - 1);
 }
 
-function findNearestImageParagraphIndex(blocks: MainBlock[], anchorCp: number, usedIds: Set<string>): number | null {
+function findNearestImageParagraphIndex(blocks: MainBlock[], anchorCp: number, usedIds: Set<string>, imageAssetId?: string): number | null {
   let bestIndex: number | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
   const anchorIndex = findAnchorIndex(blocks, anchorCp);
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]!;
     if (block.type !== 'paragraph' || usedIds.has(block.id) || !isImageOnlyParagraph(block)) continue;
+    if (imageAssetId) {
+      const imageIds = block.inlines.filter((node) => node.type === 'image').map((node) => node.asset.id);
+      if (!imageIds.includes(imageAssetId)) continue;
+    }
     const cpDistance = anchorCp < block.cpStart
       ? block.cpStart - anchorCp
       : anchorCp > block.cpEnd
@@ -649,7 +751,7 @@ function renderFloatingPlaceholders(title: string, items: string[]): string {
   return `<section class="msdoc-section msdoc-floating-leftovers"><div class="msdoc-section-title">${escapeHtml(title)}</div><div class="msdoc-floating-grid">${items.join('')}</div></section>`;
 }
 
-function placeFloatingArtifacts(mainBlocks: MainBlock[], mainTextboxes: TextboxItem[], mainShapes: ShapeAnchorInfo[]): FloatingPlacementResult {
+function placeFloatingArtifacts(mainBlocks: MainBlock[], mainTextboxes: TextboxItem[], mainShapes: ShapeAnchorInfo[], assetById: Map<string, ImageAsset>): FloatingPlacementResult {
   const beforeMap = new Map<number, string[]>();
   const skipBlockIds = new Set<string>();
   const leftoverHtml: string[] = [];
@@ -672,10 +774,34 @@ function placeFloatingArtifacts(mainBlocks: MainBlock[], mainTextboxes: TextboxI
     const textbox = (shape.matchedTextboxId ? remainingTextboxes.get(shape.matchedTextboxId) : null)
       || textboxByShapeId.get(shape.shapeId)
       || null;
+    const boundAsset = shape.imageAssetId ? assetById.get(shape.imageAssetId) : undefined;
+
     if (textbox && blockListHasRenderableContent(textbox.blocks)) {
-      pushBefore(insertionIndex, renderFloatingTextbox(shape, textbox));
+      pushBefore(insertionIndex, renderFloatingTextbox(shape, textbox, boundAsset));
       remainingTextboxes.delete(textbox.id);
       continue;
+    }
+
+    if (boundAsset) {
+      pushBefore(insertionIndex, renderAssetImage(boundAsset, shape, 'msdoc-flow-block'));
+      continue;
+    }
+
+    if (shape.imageAssetId) {
+      const exactImageIndex = findNearestImageParagraphIndex(mainBlocks, shape.anchorCp, skipBlockIds, shape.imageAssetId);
+      if (exactImageIndex != null) {
+        const imageBlock = mainBlocks[exactImageIndex];
+        if (imageBlock && imageBlock.type === 'paragraph') {
+          skipBlockIds.add(imageBlock.id);
+          pushBefore(insertionIndex, renderFloatingImage(shape, imageBlock));
+          continue;
+        }
+      }
+      const asset = assetById.get(shape.imageAssetId);
+      if (asset) {
+        pushBefore(insertionIndex, renderAssetImage(asset, shape, 'msdoc-flow-block'));
+        continue;
+      }
     }
 
     const imageIndex = findNearestImageParagraphIndex(mainBlocks, shape.anchorCp, skipBlockIds);
@@ -688,7 +814,7 @@ function placeFloatingArtifacts(mainBlocks: MainBlock[], mainTextboxes: TextboxI
       }
     }
 
-    leftoverHtml.push(renderFloatingShapePlaceholder(shape));
+    leftoverHtml.push(renderFloatingShapePlaceholder(shape, assetById));
   }
 
   for (const item of remainingTextboxes.values()) {
@@ -700,8 +826,8 @@ function placeFloatingArtifacts(mainBlocks: MainBlock[], mainTextboxes: TextboxI
   return { beforeMap, skipBlockIds, leftoverHtml };
 }
 
-function renderMainContent(mainBlocks: MainBlock[], mainTextboxes: TextboxItem[], mainShapes: ShapeAnchorInfo[]): { html: string; leftoverHtml: string[] } {
-  const placement = placeFloatingArtifacts(mainBlocks, mainTextboxes, mainShapes);
+function renderMainContent(mainBlocks: MainBlock[], mainTextboxes: TextboxItem[], mainShapes: ShapeAnchorInfo[], assetById: Map<string, ImageAsset>): { html: string; leftoverHtml: string[] } {
+  const placement = placeFloatingArtifacts(mainBlocks, mainTextboxes, mainShapes, assetById);
   const parts: string[] = [];
   for (let index = 0; index < mainBlocks.length; index += 1) {
     const before = placement.beforeMap.get(index);
@@ -722,10 +848,12 @@ function renderChromeBand(kind: ChromeKind, entries: ChromeEntry[]): string {
     if (entry.sections.length) metaParts.push(`section ${entry.sections.join(', ')}`);
     if (entry.labels.length) metaParts.push(entry.labels.join(' · '));
     if (entry.source === 'textbox') metaParts.push('textbox');
+    if (entry.source === 'shape') metaParts.push('shape');
     const meta = metaParts.join(' · ');
     const classes = ['msdoc-page-chrome-entry', `msdoc-page-chrome-entry-${kind}`];
     if (entry.pageNumberLike) classes.push('msdoc-page-chrome-entry-page');
-    return `<div class="${classes.join(' ')}">${meta ? `<div class="msdoc-page-chrome-meta">${escapeHtml(meta)}</div>` : ''}<div class="msdoc-page-chrome-body">${renderBlockList(entry.blocks)}</div></div>`;
+    const body = entry.html || renderBlockList(entry.blocks);
+    return `<div class="${classes.join(' ')}">${meta ? `<div class="msdoc-page-chrome-meta">${escapeHtml(meta)}</div>` : ''}<div class="msdoc-page-chrome-body">${body}</div></div>`;
   }).join('');
   return `<section class="msdoc-page-chrome msdoc-page-chrome-${kind} ${kind === 'header' ? 'msdoc-headers' : 'msdoc-footers'}">${items}</section>`;
 }
@@ -749,15 +877,18 @@ function renderHeadersAppendix(block: HeadersBlock): string {
   return `<section class="msdoc-section msdoc-headers"><div class="msdoc-section-title">Additional header/footer stories</div><div class="msdoc-story-grid">${items}</div></section>`;
 }
 
-function renderTextboxesAppendix(title: string, items: TextboxItem[]): string {
+function renderTextboxesAppendix(title: string, items: TextboxItem[], assetById: Map<string, ImageAsset>): string {
   if (!items.length) return '';
   const html = items.map((item) => {
     const meta = [item.reusable ? 'reusable' : '', item.shapeId != null ? `shape ${item.shapeId}` : ''].filter(Boolean).join(' · ');
+    const asset = item.shape?.imageAssetId ? assetById.get(item.shape.imageAssetId) : undefined;
+    const preview = asset && item.shape ? `<div class="msdoc-story-card-extra">${renderAssetImage(asset, item.shape)}</div>` : '';
     const shapeMeta = item.shape ? `<div class="msdoc-story-card-extra">${renderShapeMeta(item.shape)}</div>` : '';
     return `
       <article class="msdoc-story-card">
         <div class="msdoc-story-card-title">${escapeHtml(item.label)}</div>
         ${meta ? `<div class="msdoc-story-card-meta">${escapeHtml(meta)}</div>` : ''}
+        ${preview}
         ${shapeMeta}
         <div class="msdoc-story-card-body">${renderBlockList(item.blocks)}</div>
       </article>
@@ -766,15 +897,20 @@ function renderTextboxesAppendix(title: string, items: TextboxItem[]): string {
   return `<section class="msdoc-section msdoc-textboxes"><div class="msdoc-section-title">${escapeHtml(title)}</div><div class="msdoc-story-grid">${html}</div></section>`;
 }
 
-function renderShapesAppendix(title: string, shapes: ShapeAnchorInfo[]): string {
+function renderShapesAppendix(title: string, shapes: ShapeAnchorInfo[], assetById: Map<string, ImageAsset>): string {
   if (!shapes.length) return '';
-  const items = shapes.map((shape, index) => `
-    <article class="msdoc-story-card msdoc-shape-card">
-      <div class="msdoc-story-card-title">${escapeHtml(`Shape ${index + 1}`)}</div>
-      <div class="msdoc-story-card-meta">${escapeHtml(`${shape.story} story`)}</div>
-      <div class="msdoc-story-card-body">${renderShapeMeta(shape)}</div>
-    </article>
-  `).join('');
+  const items = shapes.map((shape, index) => {
+    const asset = shape.imageAssetId ? assetById.get(shape.imageAssetId) : undefined;
+    const preview = asset ? `<div class="msdoc-story-card-extra">${renderAssetImage(asset, shape)}</div>` : '';
+    return `
+      <article class="msdoc-story-card msdoc-shape-card">
+        <div class="msdoc-story-card-title">${escapeHtml(`Shape ${index + 1}`)}</div>
+        <div class="msdoc-story-card-meta">${escapeHtml(`${shape.story} story`)}</div>
+        ${preview}
+        <div class="msdoc-story-card-body">${renderShapeMeta(shape)}</div>
+      </article>
+    `;
+  }).join('');
   return `<section class="msdoc-section msdoc-shapes"><div class="msdoc-section-title">${escapeHtml(title)}</div><div class="msdoc-story-grid">${items}</div></section>`;
 }
 
@@ -853,6 +989,7 @@ export function defaultMsDocCss(): string {
 export function renderMsDoc(parsed: MsDocParseResult, options: MsDocRenderOptions = {}): MsDocRenderResult {
   const css = options.css ?? defaultMsDocCss();
 
+  const assetById = new Map(parsed.assets.filter((asset): asset is ImageAsset => asset.type === 'image').map((asset) => [asset.id, asset] as const));
   const mainBlocks = parsed.blocks.filter((block): block is MainBlock => block.type === 'paragraph' || block.type === 'table');
   const attachmentsBlocks = parsed.blocks.filter((block): block is AttachmentsBlock => block.type === 'attachments');
   const notesBlocks = parsed.blocks.filter((block): block is NotesBlock => block.type === 'notes');
@@ -863,8 +1000,8 @@ export function renderMsDoc(parsed: MsDocParseResult, options: MsDocRenderOption
   const mainShapes = parsed.blocks.filter((block): block is ShapesBlock => block.type === 'shapes' && !block.header).flatMap((block) => block.items);
   const headerShapes = parsed.blocks.filter((block): block is ShapesBlock => block.type === 'shapes' && block.header).flatMap((block) => block.items);
 
-  const chromeEntries = collectChromeEntries(headersBlock, headerTextboxes);
-  const mainContent = renderMainContent(mainBlocks, mainTextboxes, mainShapes);
+  const chromeEntries = collectChromeEntries(headersBlock, headerTextboxes, headerShapes, assetById);
+  const mainContent = renderMainContent(mainBlocks, mainTextboxes, mainShapes, assetById);
 
   const html = [
     renderChromeBand('header', chromeEntries.headers),
@@ -874,8 +1011,8 @@ export function renderMsDoc(parsed: MsDocParseResult, options: MsDocRenderOption
     ...notesBlocks.map(renderNotesBlock),
     ...commentsBlocks.map(renderCommentsBlock),
     renderFloatingPlaceholders('Unplaced floating content', mainContent.leftoverHtml),
-    renderTextboxesAppendix('Additional textboxes', headerTextboxes.filter((item) => !blockListHasRenderableContent(item.blocks) ? false : !isPageNumberLike(item.text || blockListText(item.blocks)))),
-    renderShapesAppendix('Additional header shapes', headerShapes),
+    renderTextboxesAppendix('Additional textboxes', headerTextboxes.filter((item) => !blockListHasRenderableContent(item.blocks) ? false : !isPageNumberLike(item.text || blockListText(item.blocks))), assetById),
+    renderShapesAppendix('Additional header shapes', headerShapes.filter((shape) => !chromeEntries.usedShapeIds.has(shape.id)), assetById),
     headersBlock ? renderHeadersAppendix(headersBlock) : '',
   ].join('');
 

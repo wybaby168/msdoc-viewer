@@ -152,7 +152,7 @@ export interface CpFileOffsetInfo {
   compressed: boolean;
 }
 
-export type PropertyKind = 'char' | 'para' | 'table' | 'unknown';
+export type PropertyKind = 'char' | 'para' | 'table' | 'section' | 'unknown';
 
 export interface DecodedProperty<TValue = unknown> {
   kind: PropertyKind;
@@ -476,6 +476,34 @@ export interface FieldInstructionRaw {
 
 export type FieldInstruction = FieldInstructionHyperlink | FieldInstructionIncludePicture | FieldInstructionRaw;
 
+export interface SectionPageSettings {
+  pageWidthTwips: number;
+  pageHeightTwips: number;
+  marginLeftTwips: number;
+  marginRightTwips: number;
+  marginTopTwips: number;
+  marginBottomTwips: number;
+  headerTopTwips: number;
+  footerBottomTwips: number;
+  gutterTwips: number;
+  columns: number;
+  columnSpacingTwips: number;
+  evenlySpacedColumns: boolean;
+  titlePage: boolean;
+  orientation: 'portrait' | 'landscape';
+  breakCode: number;
+  restartPageNumber: boolean;
+  pageNumberStart?: number;
+}
+
+export interface SectionDescriptor {
+  index: number;
+  cpStart: number;
+  cpEnd: number;
+  fcSepx: number;
+  properties: DecodedProperty[];
+  page: SectionPageSettings;
+}
 
 export interface PicfSummary {
   pictureOffset: number;
@@ -496,6 +524,9 @@ export interface OfficeArtBlipMeta {
   fbseRefCount?: number;
   fbseDelayOffset?: number;
   fbseName?: string;
+  fbseDelayStream?: string;
+  blipIndex?: number;
+  sourceShapeId?: number;
 }
 
 export interface ImageAssetMeta extends PicfSummary, OfficeArtBlipMeta {
@@ -511,6 +542,10 @@ export interface ImageAssetMeta extends PicfSummary, OfficeArtBlipMeta {
   vectorWidth?: number;
   vectorHeight?: number;
   vectorRecordCount?: number;
+  fbseIndex?: number;
+  dggOffset?: number;
+  blipIndex?: number;
+  sourceShapeId?: number;
 }
 
 export interface AttachmentAssetMeta {
@@ -604,6 +639,7 @@ export interface ParagraphBlock {
   id: string;
   cpStart: number;
   cpEnd: number;
+  sectionIndex?: number;
   styleId: number;
   styleName: string;
   paraState: ParaState;
@@ -633,6 +669,7 @@ export interface TableBlock {
   id: string;
   cpStart: number;
   cpEnd: number;
+  sectionIndex?: number;
   depth: number;
   rows: TableRowBlock[];
   state: TableState;
@@ -729,11 +766,21 @@ export interface ShapeBoundsTwips {
   height: number;
 }
 
+export type ShapeBlipKind = 'pib' | 'fillBlip';
+
+export interface ShapeBlipReference {
+  kind: ShapeBlipKind;
+  index: number;
+}
+
 export interface ShapeAnchorInfo {
   id: string;
   story: ShapeAnchorStoryKind;
   anchorCp: number;
   shapeId: number;
+  sectionIndex?: number;
+  headerKind?: 'header' | 'footer';
+  headerRole?: HeaderFooterRole;
   boundsTwips: ShapeBoundsTwips;
   anchorX: ShapeAnchorXOrigin;
   anchorY: ShapeAnchorYOrigin;
@@ -742,6 +789,12 @@ export interface ShapeAnchorInfo {
   behindText: boolean;
   anchorLocked: boolean;
   matchedTextboxId?: string;
+  drawingName?: string;
+  drawingDescription?: string;
+  shapeTypeCode?: number;
+  blipRef?: ShapeBlipReference;
+  imageAssetId?: string;
+  imageAsset?: ImageAsset;
 }
 
 export interface TextboxItem {
@@ -752,6 +805,7 @@ export interface TextboxItem {
   reusable: boolean;
   shapeId?: number;
   shape?: ShapeAnchorInfo;
+  sectionIndex?: number;
   blocks: Array<ParagraphBlock | TableBlock>;
   text: string;
 }
@@ -776,6 +830,7 @@ export interface ParagraphModel {
   id: string;
   cpStart: number;
   cpEnd: number;
+  sectionIndex?: number;
   terminator: string;
   text: string;
   rawProperties: DecodedProperty[];
@@ -821,8 +876,10 @@ export interface MsDocMeta {
     headerTextboxes?: number;
     shapes?: number;
     headerShapes?: number;
+    sections?: number;
   };
 }
+
 
 export interface MsDocStyleSummary {
   istd: number;
@@ -839,6 +896,7 @@ export interface MsDocParseResult {
   meta: MsDocMeta;
   fonts: FontInfo[];
   styles: MsDocStyleSummary[];
+  sections: SectionDescriptor[];
   blocks: MsDocBlock[];
   assets: MsDocAsset[];
 }

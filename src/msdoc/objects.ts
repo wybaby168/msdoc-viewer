@@ -1,5 +1,6 @@
 import { BinaryReader } from '../core/binary.js';
 import { dataUrlFromBytes, slugify, uniqueId } from '../core/utils.js';
+import { detectMimeFromBlipType, parseInlineOfficeArtShape } from './officeart.js';
 import { convertMetafileToSvg } from './vector.js';
 import type {
   AttachmentAsset,
@@ -37,7 +38,7 @@ interface PicfHeader {
   yExt: number;
 }
 
-interface OfficeArtRecordHeader {
+export interface OfficeArtRecordHeader {
   recVer: number;
   recInstance: number;
   recType: number;
@@ -224,7 +225,7 @@ function readOptionalPictureName(pictureChunk: Uint8Array, picf: PicfHeader): Pi
  * Parsing this explicitly lets us walk inline shape containers instead of guessing
  * image payloads by magic bytes, which was the root cause of the broken image output.
  */
-function parseOfficeArtRecordHeader(bytes: Uint8Array, offset: number): OfficeArtRecordHeader | null {
+export function parseOfficeArtRecordHeader(bytes: Uint8Array, offset: number): OfficeArtRecordHeader | null {
   if (offset < 0 || offset + 8 > bytes.length) return null;
   const reader = new BinaryReader(bytes);
   const versionAndInstance = reader.u16(offset);
@@ -286,19 +287,6 @@ function dibToBmp(dibBytes: Uint8Array): Uint8Array | null {
   return out;
 }
 
-function detectMimeFromBlipType(blipType: number): string | null {
-  switch (blipType) {
-    case 0x02: return 'image/emf';
-    case 0x03: return 'image/wmf';
-    case 0x04: return 'image/pict';
-    case 0x05: return 'image/jpeg';
-    case 0x06: return 'image/png';
-    case 0x07: return 'image/dib';
-    case 0x11: return 'image/tiff';
-    case 0x12: return 'image/jpeg';
-    default: return null;
-  }
-}
 
 /**
  * OfficeArtBStoreContainerFileBlock can wrap an OfficeArtFBSE record instead of a
@@ -326,7 +314,7 @@ function extractEmbeddedBlipFromFbse(bytes: Uint8Array, offset: number, header: 
   const candidate = extractBlipPayload(bytes, embeddedBlipOffset, embeddedHeader);
   if (!candidate) return null;
   const fbseName = cbName > 0 && nameOffset + cbName <= payloadEnd
-    ? new TextDecoder('utf-16le').decode(bytes.subarray(nameOffset, nameOffset + Math.max(0, cbName - 2))).replace(/ +$/g, '')
+    ? new TextDecoder('utf-16le').decode(bytes.subarray(nameOffset, nameOffset + Math.max(0, cbName - 2))).replace(/\0+$/g, '')
     : '';
   return {
     ...candidate,
@@ -480,7 +468,13 @@ function maybeConvertVectorCandidate(candidate: PictureCandidate): PictureCandid
   };
 }
 
-function createImageAsset(candidate: PictureCandidate, pictureOffset: number, picf: PicfHeader, linkedPath?: string): ImageAsset {
+function createImageAsset(
+  candidate: PictureCandidate,
+  pictureOffset: number,
+  picf: PicfHeader,
+  linkedPath?: string,
+  inlineShape?: { shapeId: number; blipIndex?: number; name?: string; description?: string } | null,
+): ImageAsset {
   const sourceUrl = candidate.sourceUrl;
   const localExternal = sourceUrl ? isLocalExternalPath(sourceUrl) : false;
   const meta: ImageAssetMeta = {
@@ -494,6 +488,8 @@ function createImageAsset(candidate: PictureCandidate, pictureOffset: number, pi
     sourceKind: candidate.kind === 'officeArt' ? 'embedded' : candidate.kind,
     localExternal,
     browserRenderable: candidate.displayable,
+    blipIndex: inlineShape?.blipIndex,
+    sourceShapeId: inlineShape?.shapeId,
     ...(candidate.meta || {}),
   };
   return {
@@ -535,10 +531,11 @@ export function extractPictureAsset(
   const linkedPath = pictureName?.value;
   if (pictureName) pictureDataOffset = pictureName.nextOffset;
 
+  const inlineShape = parseInlineOfficeArtShape(pictureChunk, pictureDataOffset);
   const officeArtCandidates = findOfficeArtCandidates(pictureChunk, pictureDataOffset);
   const officeArtCandidate = pickBestPictureCandidate(officeArtCandidates);
   if (officeArtCandidate) {
-    return createImageAsset(maybeConvertVectorCandidate(officeArtCandidate), pictureOffset, picf, linkedPath);
+    return createImageAsset(maybeConvertVectorCandidate(officeArtCandidate), pictureOffset, picf, linkedPath, inlineShape);
   }
 
   if (linkedPath) {
@@ -552,7 +549,7 @@ export function extractPictureAsset(
       kind: 'linked',
       meta: { linkedPath },
     };
-    return createImageAsset(linkedCandidate, pictureOffset, picf, linkedPath);
+    return createImageAsset(linkedCandidate, pictureOffset, picf, linkedPath, inlineShape);
   }
 
   const bodyStart = Math.min(picf.cbHeader || PICF_HEADER_SIZE, pictureChunk.length);
@@ -565,7 +562,7 @@ export function extractPictureAsset(
       bytes: pictureChunk,
       dataUrl: dataUrlFromBytes(pictureChunk, 'application/octet-stream'),
       displayable: false,
-      meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: false },
+      meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: false, blipIndex: inlineShape?.blipIndex, sourceShapeId: inlineShape?.shapeId },
     };
   }
 
@@ -586,8 +583,27 @@ export function extractPictureAsset(
     bytes: fallbackCandidate.bytes,
     dataUrl: dataUrlFromBytes(fallbackCandidate.bytes, fallbackCandidate.mime),
     displayable: fallbackCandidate.displayable,
-    meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: Boolean(fallbackCandidate.displayable), ...(fallbackCandidate.meta || {}) },
+    meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: Boolean(fallbackCandidate.displayable), blipIndex: inlineShape?.blipIndex, sourceShapeId: inlineShape?.shapeId, ...(fallbackCandidate.meta || {}) },
   };
+}
+
+
+export function extractFbseImageAsset(
+  drawingBytes: Uint8Array,
+  offset: number,
+  header: OfficeArtRecordHeader | null = parseOfficeArtRecordHeader(drawingBytes, offset),
+): ImageAsset | null {
+  if (!header || header.recType !== OFFICEART_FBSE) return null;
+  const candidate = extractEmbeddedBlipFromFbse(drawingBytes, offset, header);
+  if (!candidate) return null;
+  const normalized = maybeConvertVectorCandidate(candidate);
+  return createImageAsset(normalized, -1, {
+    lcb: normalized.bytes.length,
+    cbHeader: 0,
+    mm: MM_SHAPE,
+    xExt: 0,
+    yExt: 0,
+  });
 }
 
 function readCString(bytes: Uint8Array, offset: number): { value: string; nextOffset: number } {

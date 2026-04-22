@@ -1,4 +1,5 @@
-import type { MsDocParseResult, MsDocRenderOptions, MsDocRenderResult } from '../types.js';
+import type { MsDocParseResult, MsDocRenderOptions, MsDocRenderResult, ParagraphBlock, TableBlock } from '../types.js';
+export declare function renderBlockList(blocks: Array<ParagraphBlock | TableBlock>): string;
 export declare function defaultMsDocCss(): string;
 /**
  * Converts the parsed AST into HTML and a companion CSS string.
