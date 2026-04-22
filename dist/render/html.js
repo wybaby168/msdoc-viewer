@@ -398,10 +398,12 @@ function renderTextboxesBlock(block) {
     const title = block.header ? 'Header textboxes' : 'Textboxes';
     const items = block.items.map((item) => {
         const meta = [item.reusable ? 'reusable' : '', item.shapeId != null ? `shape ${item.shapeId}` : ''].filter(Boolean).join(' · ');
+        const shapeMeta = item.shape ? `<div class="msdoc-story-card-extra">${renderShapeMeta(item.shape)}</div>` : '';
         return `
       <article class="msdoc-story-card">
         <div class="msdoc-story-card-title">${escapeHtml(item.label)}</div>
         ${meta ? `<div class="msdoc-story-card-meta">${escapeHtml(meta)}</div>` : ''}
+        ${shapeMeta}
         <div class="msdoc-story-card-body">${renderBlockList(item.blocks)}</div>
       </article>
     `;
@@ -411,6 +413,39 @@ function renderTextboxesBlock(block) {
 function renderAttachmentsBlock(block) {
     const items = block.items.map((item) => `<li><a class="msdoc-attachment" href="${escapeHtml(item.dataUrl)}" download="${escapeHtml(item.name || 'embedded-file')}">📎 ${escapeHtml(item.name || 'embedded-file')}</a></li>`).join('');
     return `<section class="msdoc-attachments"><div class="msdoc-attachments-title">Embedded attachments</div><ul>${items}</ul></section>`;
+}
+function formatPxValue(value) {
+    return value == null ? 'auto' : `${value}px`;
+}
+function renderShapeMeta(shape) {
+    const widthPx = twipsToPx(shape.boundsTwips.width);
+    const heightPx = twipsToPx(shape.boundsTwips.height);
+    const leftPx = twipsToPx(shape.boundsTwips.left);
+    const topPx = twipsToPx(shape.boundsTwips.top);
+    const badges = [
+        shape.behindText ? 'behind text' : 'in front of text',
+        shape.anchorLocked ? 'anchor locked' : '',
+        shape.matchedTextboxId ? `textbox linked` : '',
+    ].filter(Boolean).map((label) => `<span class="msdoc-badge">${escapeHtml(label)}</span>`).join(' ');
+    const rows = [
+        ['Shape ID', String(shape.shapeId)],
+        ['Anchor CP', String(shape.anchorCp)],
+        ['Origin', `${shape.anchorX} / ${shape.anchorY}`],
+        ['Wrap', `${shape.wrapStyle} / ${shape.wrapSide}`],
+        ['Bounds', `${formatPxValue(leftPx)} × ${formatPxValue(topPx)} → ${formatPxValue(widthPx)} × ${formatPxValue(heightPx)}`],
+    ].map(([label, value]) => `<div class="msdoc-shape-meta-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('');
+    return `${badges ? `<div class="msdoc-shape-badges">${badges}</div>` : ''}<dl class="msdoc-shape-meta">${rows}</dl>`;
+}
+function renderShapesBlock(block) {
+    const title = block.header ? 'Header floating shapes' : 'Floating shapes';
+    const items = block.items.map((shape, index) => `
+    <article class="msdoc-story-card msdoc-shape-card">
+      <div class="msdoc-story-card-title">${escapeHtml(`${block.header ? 'Header shape' : 'Shape'} ${index + 1}`)}</div>
+      <div class="msdoc-story-card-meta">${escapeHtml(`${shape.story} story`)}</div>
+      <div class="msdoc-story-card-body">${renderShapeMeta(shape)}</div>
+    </article>
+  `).join('');
+    return `<section class="msdoc-section msdoc-shapes"><div class="msdoc-section-title">${title}</div><div class="msdoc-story-grid">${items}</div></section>`;
 }
 export function defaultMsDocCss() {
     return `
@@ -443,7 +478,13 @@ export function defaultMsDocCss() {
 .msdoc-story-card{border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fafafa}
 .msdoc-story-card-title{font-weight:600;margin-bottom:4px}
 .msdoc-story-card-meta{color:#6b7280;font-size:.92em;margin-bottom:8px}
+.msdoc-story-card-extra{margin-bottom:10px}
 .msdoc-badge{display:inline-block;padding:2px 6px;border-radius:999px;background:#eef2ff;color:#4338ca;font-size:.82em}
+.msdoc-shape-badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.msdoc-shape-meta{margin:0;display:grid;gap:6px}
+.msdoc-shape-meta-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px}
+.msdoc-shape-meta-row dt{font-weight:600;margin:0}
+.msdoc-shape-meta-row dd{margin:0;color:#374151}
 .msdoc-note-ref,.msdoc-comment-ref{font-size:.78em;vertical-align:super;line-height:1}
 .msdoc-comment-ref a,.msdoc-note-ref a{text-decoration:none}
 .msdoc-revision{border-radius:2px;padding:0 1px}
@@ -473,6 +514,8 @@ export function renderMsDoc(parsed, options = {}) {
             return renderHeadersBlock(block);
         if (block.type === 'textboxes')
             return renderTextboxesBlock(block);
+        if (block.type === 'shapes')
+            return renderShapesBlock(block);
         return '';
     }).join('');
     return {

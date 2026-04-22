@@ -6,6 +6,7 @@ import { parseFib } from './fib.js';
 import { readChpxRuns, readPapxRuns, type ChpxRun, type PapxRun } from './fkp.js';
 import { parseFonts } from './fonts.js';
 import { extractObjectPool, extractPictureAsset } from './objects.js';
+import { readShapeAnchors } from './shapes.js';
 import {
   buildHeaderStoryDescriptors,
   buildStoryWindows,
@@ -47,6 +48,8 @@ import type {
   ParagraphModel,
   ParagraphRange,
   ResolvedStyle,
+  ShapeAnchorInfo,
+  ShapesBlock,
   StyleCollection,
   TableBlock,
   TableCellBlock,
@@ -848,6 +851,7 @@ function buildTextboxItems(
   storyCpBase: number,
   entries: Array<{ index: number; cpStart: number; cpEnd: number; data: Uint8Array }>,
   parseContent: (cpStart: number, cpEnd: number, context?: InlineBuildContext) => ParsedStoryContent,
+  shapeById: Map<number, ShapeAnchorInfo> = new Map(),
 ): TextboxItem[] {
   const items: TextboxItem[] = [];
   for (const entry of entries) {
@@ -856,16 +860,19 @@ function buildTextboxItems(
       ? parseContent(storyCpBase + entry.cpStart, storyCpBase + entry.cpEnd)
       : { paragraphs: [], blocks: [], text: '' };
     if (!content.blocks.length && !content.text && meta.reusable) continue;
-    items.push({
+    const item: TextboxItem = {
       id: uniqueId(header ? 'hdr-textbox' : 'textbox'),
       index: entry.index,
       label: `${header ? 'Header textbox' : 'Textbox'} ${entry.index + 1}`,
       header,
       reusable: meta.reusable,
       shapeId: meta.shapeId || undefined,
+      shape: meta.shapeId ? shapeById.get(meta.shapeId) : undefined,
       blocks: content.blocks,
       text: content.text,
-    });
+    };
+    if (item.shape) item.shape.matchedTextboxId = item.id;
+    items.push(item);
   }
   return items;
 }
@@ -1040,6 +1047,11 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
     commentRefs: commentRefMap,
   });
 
+  const mainShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.main.cpStart, 'main');
+  const headerShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.header.cpStart, 'header');
+  const mainShapeById = new Map(mainShapeAnchors.map((anchor) => [anchor.shapeId, anchor]));
+  const headerShapeById = new Map(headerShapeAnchors.map((anchor) => [anchor.shapeId, anchor]));
+
   const headerStories = buildHeaderStories(
     buildHeaderStoryDescriptors(tableBytes, fib.fibRgFcLcb, storyWindows.header),
     parseContent,
@@ -1055,6 +1067,7 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
       22,
     ),
     parseContent,
+    mainShapeById,
   );
   const headerTextboxItems = buildTextboxItems(
     true,
@@ -1066,7 +1079,17 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
       22,
     ),
     parseContent,
+    headerShapeById,
   );
+  const floatingShapes = mainShapeAnchors.filter((anchor) => !anchor.matchedTextboxId);
+  const headerFloatingShapes = headerShapeAnchors.filter((anchor) => !anchor.matchedTextboxId);
+  if (floatingShapes.length || headerFloatingShapes.length) {
+    pushWarning(warnings, 'Floating shape anchors were parsed and exposed as structured metadata cards when no textbox story was available', {
+      code: 'floating-shapes-partial-render',
+      severity: 'info',
+      details: { mainShapes: floatingShapes.length, headerShapes: headerFloatingShapes.length },
+    });
+  }
 
   const blocks: MsDocParseResult['blocks'] = [...mainContent.blocks];
   if (footnoteItems.length) {
@@ -1092,6 +1115,14 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
   if (headerTextboxItems.length) {
     const headerTextboxesBlock: TextboxesBlock = { type: 'textboxes', id: uniqueId('header-textboxes'), header: true, items: headerTextboxItems };
     blocks.push(headerTextboxesBlock);
+  }
+  if (floatingShapes.length) {
+    const shapesBlock: ShapesBlock = { type: 'shapes', id: uniqueId('shapes'), header: false, items: floatingShapes };
+    blocks.push(shapesBlock);
+  }
+  if (headerFloatingShapes.length) {
+    const headerShapesBlock: ShapesBlock = { type: 'shapes', id: uniqueId('header-shapes'), header: true, items: headerFloatingShapes };
+    blocks.push(headerShapesBlock);
   }
 
   const trailingAttachments = Array.from(objectPool.values())
@@ -1153,6 +1184,8 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
         headers: headerStories.length,
         textboxes: textboxItems.length,
         headerTextboxes: headerTextboxItems.length,
+        shapes: mainShapeAnchors.length,
+        headerShapes: headerShapeAnchors.length,
       },
     },
     fonts: fonts.fonts,

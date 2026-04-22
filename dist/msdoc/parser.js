@@ -6,6 +6,7 @@ import { parseFib } from './fib.js';
 import { readChpxRuns, readPapxRuns } from './fkp.js';
 import { parseFonts } from './fonts.js';
 import { extractObjectPool, extractPictureAsset } from './objects.js';
+import { readShapeAnchors } from './shapes.js';
 import { buildHeaderStoryDescriptors, buildStoryWindows, parseCommentRefMeta, parseSttbfRMark, parseTextboxMeta, parseXstArray, readFixedPlc, } from './stories.js';
 import { applyTableStateToCells, charPropsToState, getTableDepth, paraPropsToState, tablePropsToState, } from './properties.js';
 import { mergePropertyArrays, parseStyles, splitPropertiesByKind } from './styles.js';
@@ -649,7 +650,7 @@ function buildCommentItems(storyCpBase, textEntries, refEntries, commentAuthors,
     }
     return { items, refMap };
 }
-function buildTextboxItems(header, storyCpBase, entries, parseContent) {
+function buildTextboxItems(header, storyCpBase, entries, parseContent, shapeById = new Map()) {
     const items = [];
     for (const entry of entries) {
         const meta = parseTextboxMeta(entry.data);
@@ -658,16 +659,20 @@ function buildTextboxItems(header, storyCpBase, entries, parseContent) {
             : { paragraphs: [], blocks: [], text: '' };
         if (!content.blocks.length && !content.text && meta.reusable)
             continue;
-        items.push({
+        const item = {
             id: uniqueId(header ? 'hdr-textbox' : 'textbox'),
             index: entry.index,
             label: `${header ? 'Header textbox' : 'Textbox'} ${entry.index + 1}`,
             header,
             reusable: meta.reusable,
             shapeId: meta.shapeId || undefined,
+            shape: meta.shapeId ? shapeById.get(meta.shapeId) : undefined,
             blocks: content.blocks,
             text: content.text,
-        });
+        };
+        if (item.shape)
+            item.shape.matchedTextboxId = item.id;
+        items.push(item);
     }
     return items;
 }
@@ -768,9 +773,22 @@ export function parseMsDoc(input, options = {}) {
         noteRefs,
         commentRefs: commentRefMap,
     });
+    const mainShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.main.cpStart, 'main');
+    const headerShapeAnchors = readShapeAnchors(tableBytes, fib.fibRgFcLcb, storyWindows.header.cpStart, 'header');
+    const mainShapeById = new Map(mainShapeAnchors.map((anchor) => [anchor.shapeId, anchor]));
+    const headerShapeById = new Map(headerShapeAnchors.map((anchor) => [anchor.shapeId, anchor]));
     const headerStories = buildHeaderStories(buildHeaderStoryDescriptors(tableBytes, fib.fibRgFcLcb, storyWindows.header), parseContent);
-    const textboxItems = buildTextboxItems(false, storyWindows.textbox.cpStart, readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcftxbxTxt, fib.fibRgFcLcb.lcbPlcftxbxTxt, 22), parseContent);
-    const headerTextboxItems = buildTextboxItems(true, storyWindows.headerTextbox.cpStart, readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcfHdrtxbxTxt, fib.fibRgFcLcb.lcbPlcfHdrtxbxTxt, 22), parseContent);
+    const textboxItems = buildTextboxItems(false, storyWindows.textbox.cpStart, readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcftxbxTxt, fib.fibRgFcLcb.lcbPlcftxbxTxt, 22), parseContent, mainShapeById);
+    const headerTextboxItems = buildTextboxItems(true, storyWindows.headerTextbox.cpStart, readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcfHdrtxbxTxt, fib.fibRgFcLcb.lcbPlcfHdrtxbxTxt, 22), parseContent, headerShapeById);
+    const floatingShapes = mainShapeAnchors.filter((anchor) => !anchor.matchedTextboxId);
+    const headerFloatingShapes = headerShapeAnchors.filter((anchor) => !anchor.matchedTextboxId);
+    if (floatingShapes.length || headerFloatingShapes.length) {
+        pushWarning(warnings, 'Floating shape anchors were parsed and exposed as structured metadata cards when no textbox story was available', {
+            code: 'floating-shapes-partial-render',
+            severity: 'info',
+            details: { mainShapes: floatingShapes.length, headerShapes: headerFloatingShapes.length },
+        });
+    }
     const blocks = [...mainContent.blocks];
     if (footnoteItems.length) {
         const footnotesBlock = { type: 'notes', id: uniqueId('notes-footnote'), kind: 'footnote', items: footnoteItems };
@@ -795,6 +813,14 @@ export function parseMsDoc(input, options = {}) {
     if (headerTextboxItems.length) {
         const headerTextboxesBlock = { type: 'textboxes', id: uniqueId('header-textboxes'), header: true, items: headerTextboxItems };
         blocks.push(headerTextboxesBlock);
+    }
+    if (floatingShapes.length) {
+        const shapesBlock = { type: 'shapes', id: uniqueId('shapes'), header: false, items: floatingShapes };
+        blocks.push(shapesBlock);
+    }
+    if (headerFloatingShapes.length) {
+        const headerShapesBlock = { type: 'shapes', id: uniqueId('header-shapes'), header: true, items: headerFloatingShapes };
+        blocks.push(headerShapesBlock);
     }
     const trailingAttachments = Array.from(objectPool.values())
         .filter((item) => item?.attachment && !usedAttachmentNames.has(item.entry.name))
@@ -853,6 +879,8 @@ export function parseMsDoc(input, options = {}) {
                 headers: headerStories.length,
                 textboxes: textboxItems.length,
                 headerTextboxes: headerTextboxItems.length,
+                shapes: mainShapeAnchors.length,
+                headerShapes: headerShapeAnchors.length,
             },
         },
         fonts: fonts.fonts,

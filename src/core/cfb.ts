@@ -14,8 +14,14 @@ function isSpecialSectorId(sid: number): boolean {
   return sid === FREESECT || sid === ENDOFCHAIN || sid === FATSECT || sid === DIFSECT;
 }
 
+/**
+ * Resolves a FAT sector number to its absolute byte range.
+ * CFB sector 0 starts immediately after the header sector, so the offset is
+ * `(sid + 1) * sectorSize` instead of `512 + sid * sectorSize`. This matters
+ * for version-4 compound files whose sector size is 4096 bytes.
+ */
 function readSectorAbsolute(bytes: Uint8Array, sectorSize: number, sid: number, byteLength = sectorSize): Uint8Array {
-  const start = 512 + sid * sectorSize;
+  const start = (sid + 1) * sectorSize;
   const end = start + byteLength;
   if (start < 0 || end > bytes.length) {
     throw new Error(`Sector ${sid} is out of bounds`);
@@ -172,8 +178,10 @@ export function parseCFB(input: BinaryInput, _options: Record<string, unknown> =
   const firstDifatSector = reader.i32(68);
   const numDifatSectors = reader.u32(72);
 
-  const payloadSize = Math.max(0, bytes.length - 512);
-  if (payloadSize % sectorSize !== 0) {
+  // Version-4 CFB files pad the 512-byte header out to a full sector, so the
+  // usable payload begins after one complete sector, not necessarily after 512 bytes.
+  const payloadSize = Math.max(0, bytes.length - sectorSize);
+  if (payloadSize > 0 && payloadSize % sectorSize !== 0) {
     pushWarning(warnings, 'Compound file payload is not aligned to the declared sector size; tolerant stream reads enabled', {
       code: 'cfb-partial-tail-sector',
       severity: 'warning',

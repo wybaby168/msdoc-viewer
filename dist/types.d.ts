@@ -620,6 +620,33 @@ export interface HeadersBlock {
     id: string;
     stories: HeaderFooterStory[];
 }
+export type ShapeAnchorStoryKind = 'main' | 'header';
+export type ShapeAnchorXOrigin = 'margin' | 'page' | 'column' | `unknown-${number}`;
+export type ShapeAnchorYOrigin = 'margin' | 'page' | 'paragraph' | `unknown-${number}`;
+export type ShapeWrapStyle = 'around' | 'topBottom' | 'square' | 'none' | 'tight' | 'through' | `unknown-${number}`;
+export type ShapeWrapSide = 'both' | 'left' | 'right' | 'largest' | `unknown-${number}`;
+export interface ShapeBoundsTwips {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+}
+export interface ShapeAnchorInfo {
+    id: string;
+    story: ShapeAnchorStoryKind;
+    anchorCp: number;
+    shapeId: number;
+    boundsTwips: ShapeBoundsTwips;
+    anchorX: ShapeAnchorXOrigin;
+    anchorY: ShapeAnchorYOrigin;
+    wrapStyle: ShapeWrapStyle;
+    wrapSide: ShapeWrapSide;
+    behindText: boolean;
+    anchorLocked: boolean;
+    matchedTextboxId?: string;
+}
 export interface TextboxItem {
     id: string;
     index: number;
@@ -627,6 +654,7 @@ export interface TextboxItem {
     header: boolean;
     reusable: boolean;
     shapeId?: number;
+    shape?: ShapeAnchorInfo;
     blocks: Array<ParagraphBlock | TableBlock>;
     text: string;
 }
@@ -636,7 +664,13 @@ export interface TextboxesBlock {
     header: boolean;
     items: TextboxItem[];
 }
-export type MsDocBlock = ParagraphBlock | TableBlock | AttachmentsBlock | NotesBlock | CommentsBlock | HeadersBlock | TextboxesBlock;
+export interface ShapesBlock {
+    type: 'shapes';
+    id: string;
+    header: boolean;
+    items: ShapeAnchorInfo[];
+}
+export type MsDocBlock = ParagraphBlock | TableBlock | AttachmentsBlock | NotesBlock | CommentsBlock | HeadersBlock | TextboxesBlock | ShapesBlock;
 export interface ParagraphModel {
     id: string;
     cpStart: number;
@@ -681,6 +715,8 @@ export interface MsDocMeta {
         headers?: number;
         textboxes?: number;
         headerTextboxes?: number;
+        shapes?: number;
+        headerShapes?: number;
     };
 }
 export interface MsDocStyleSummary {
