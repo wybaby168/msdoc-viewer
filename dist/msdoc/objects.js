@@ -175,12 +175,31 @@ function parsePicfHeader(bytes) {
     if (bytes.length < PICF_HEADER_SIZE)
         return null;
     const reader = new BinaryReader(bytes);
+    // PICMID stores the intended display goal size in twips plus mx/my scaling
+    // factors (tenths of a percent). Word uses these values for inline picture
+    // layout, including images that live in header/footer stories.
+    const dxaGoalTwips = reader.i16(28);
+    const dyaGoalTwips = reader.i16(30);
+    const scaleXPermille = reader.u16(32);
+    const scaleYPermille = reader.u16(34);
+    const displayWidthTwips = dxaGoalTwips > 0 && scaleXPermille > 0
+        ? Math.max(15, Math.min(31680, Math.round((dxaGoalTwips * scaleXPermille) / 1000)))
+        : undefined;
+    const displayHeightTwips = dyaGoalTwips > 0 && scaleYPermille > 0
+        ? Math.max(15, Math.min(31680, Math.round((dyaGoalTwips * scaleYPermille) / 1000)))
+        : undefined;
     return {
         lcb: reader.i32(0),
         cbHeader: reader.u16(4),
         mm: reader.u16(6),
         xExt: reader.i16(8),
         yExt: reader.i16(10),
+        dxaGoalTwips: dxaGoalTwips > 0 ? dxaGoalTwips : undefined,
+        dyaGoalTwips: dyaGoalTwips > 0 ? dyaGoalTwips : undefined,
+        scaleXPermille: scaleXPermille || undefined,
+        scaleYPermille: scaleYPermille || undefined,
+        displayWidthTwips,
+        displayHeightTwips,
     };
 }
 /**
@@ -475,6 +494,12 @@ function createImageAsset(candidate, pictureOffset, picf, linkedPath, inlineShap
         mm: picf.mm,
         xExt: picf.xExt,
         yExt: picf.yExt,
+        dxaGoalTwips: picf.dxaGoalTwips,
+        dyaGoalTwips: picf.dyaGoalTwips,
+        scaleXPermille: picf.scaleXPermille,
+        scaleYPermille: picf.scaleYPermille,
+        displayWidthTwips: picf.displayWidthTwips,
+        displayHeightTwips: picf.displayHeightTwips,
         linkedPath,
         sourceKind: candidate.kind === 'officeArt' ? 'embedded' : candidate.kind,
         localExternal,
@@ -546,7 +571,24 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
             bytes: pictureChunk,
             dataUrl: dataUrlFromBytes(pictureChunk, 'application/octet-stream'),
             displayable: false,
-            meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: false, blipIndex: inlineShape?.blipIndex, sourceShapeId: inlineShape?.shapeId },
+            meta: {
+                pictureOffset,
+                lcb: picf.lcb,
+                cbHeader: picf.cbHeader,
+                mm: picf.mm,
+                xExt: picf.xExt,
+                yExt: picf.yExt,
+                dxaGoalTwips: picf.dxaGoalTwips,
+                dyaGoalTwips: picf.dyaGoalTwips,
+                scaleXPermille: picf.scaleXPermille,
+                scaleYPermille: picf.scaleYPermille,
+                displayWidthTwips: picf.displayWidthTwips,
+                displayHeightTwips: picf.displayHeightTwips,
+                sourceKind: 'fallback',
+                browserRenderable: false,
+                blipIndex: inlineShape?.blipIndex,
+                sourceShapeId: inlineShape?.shapeId,
+            },
         };
     }
     const start = bodyStart + segment.start;
@@ -557,7 +599,22 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
         bytes: imageBytes,
         displayable: isBrowserDisplayableMime(segment.mime),
         kind: 'fallback',
-        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: isBrowserDisplayableMime(segment.mime) },
+        meta: {
+            pictureOffset,
+            lcb: picf.lcb,
+            cbHeader: picf.cbHeader,
+            mm: picf.mm,
+            xExt: picf.xExt,
+            yExt: picf.yExt,
+            dxaGoalTwips: picf.dxaGoalTwips,
+            dyaGoalTwips: picf.dyaGoalTwips,
+            scaleXPermille: picf.scaleXPermille,
+            scaleYPermille: picf.scaleYPermille,
+            displayWidthTwips: picf.displayWidthTwips,
+            displayHeightTwips: picf.displayHeightTwips,
+            sourceKind: 'fallback',
+            browserRenderable: isBrowserDisplayableMime(segment.mime),
+        },
     });
     return {
         id: uniqueId('asset-img'),
@@ -566,7 +623,25 @@ export function extractPictureAsset(dataStreamBytes, pictureOffset, options = {}
         bytes: fallbackCandidate.bytes,
         dataUrl: dataUrlFromBytes(fallbackCandidate.bytes, fallbackCandidate.mime),
         displayable: fallbackCandidate.displayable,
-        meta: { pictureOffset, lcb: picf.lcb, cbHeader: picf.cbHeader, mm: picf.mm, sourceKind: 'fallback', browserRenderable: Boolean(fallbackCandidate.displayable), blipIndex: inlineShape?.blipIndex, sourceShapeId: inlineShape?.shapeId, ...(fallbackCandidate.meta || {}) },
+        meta: {
+            pictureOffset,
+            lcb: picf.lcb,
+            cbHeader: picf.cbHeader,
+            mm: picf.mm,
+            xExt: picf.xExt,
+            yExt: picf.yExt,
+            dxaGoalTwips: picf.dxaGoalTwips,
+            dyaGoalTwips: picf.dyaGoalTwips,
+            scaleXPermille: picf.scaleXPermille,
+            scaleYPermille: picf.scaleYPermille,
+            displayWidthTwips: picf.displayWidthTwips,
+            displayHeightTwips: picf.displayHeightTwips,
+            sourceKind: 'fallback',
+            browserRenderable: Boolean(fallbackCandidate.displayable),
+            blipIndex: inlineShape?.blipIndex,
+            sourceShapeId: inlineShape?.shapeId,
+            ...(fallbackCandidate.meta || {}),
+        },
     };
 }
 export function extractFbseImageAsset(drawingBytes, offset, header = parseOfficeArtRecordHeader(drawingBytes, offset)) {

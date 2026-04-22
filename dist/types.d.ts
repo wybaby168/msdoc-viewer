@@ -474,6 +474,12 @@ export interface PicfSummary {
     mm?: number;
     xExt?: number;
     yExt?: number;
+    dxaGoalTwips?: number;
+    dyaGoalTwips?: number;
+    scaleXPermille?: number;
+    scaleYPermille?: number;
+    displayWidthTwips?: number;
+    displayHeightTwips?: number;
 }
 export interface OfficeArtBlipMeta {
     recType?: number;

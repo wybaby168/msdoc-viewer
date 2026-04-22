@@ -25,6 +25,26 @@ function styleObjectToCss(style) {
         .map(([key, value]) => `${key}:${value}`)
         .join(';');
 }
+// Inline pictures use PICMID goal dimensions instead of intrinsic bitmap size.
+// This matters most for header/footer images, where Word often stores a large
+// raster but asks the renderer to display it much smaller on the page.
+function inlineImageDisplaySizePx(asset) {
+    const widthPx = twipsToPx(asset.meta?.displayWidthTwips);
+    const heightPx = twipsToPx(asset.meta?.displayHeightTwips);
+    return {
+        widthPx: widthPx && widthPx > 0 ? widthPx : undefined,
+        heightPx: heightPx && heightPx > 0 ? heightPx : undefined,
+    };
+}
+function applyInlineImageDisplaySize(style, asset) {
+    const { widthPx, heightPx } = inlineImageDisplaySizePx(asset);
+    if (!widthPx && !heightPx)
+        return;
+    if (widthPx)
+        style.width = `${widthPx}px`;
+    if (heightPx)
+        style.height = `${heightPx}px`;
+}
 function sanitizeLinkHref(href) {
     const value = String(href || '').trim();
     if (!value)
@@ -392,6 +412,7 @@ function renderImageNode(node) {
     const baseStyle = inlineStyleToCss(node.style);
     baseStyle['max-width'] = '100%';
     baseStyle.height = 'auto';
+    applyInlineImageDisplaySize(baseStyle, node.asset);
     const href = sanitizeLinkHref(node.href);
     if (!src || node.asset.displayable === false) {
         const fallbackHref = sanitizeAssetHref(node.asset.dataUrl) || sanitizeAssetHref(node.asset.sourceUrl);
@@ -416,7 +437,9 @@ function renderStandaloneImageAsset(asset) {
             ? `<a class="msdoc-attachment msdoc-image-fallback" href="${escapeHtml(fallbackHref)}" target="_blank" rel="noreferrer noopener">🖼 ${label}</a>`
             : `<span class="msdoc-image-fallback">🖼 ${label}</span>`;
     }
-    return `<img class="msdoc-image" src="${escapeHtml(src)}" alt="" style="display:block;max-width:100%;height:auto;margin:0 auto">`;
+    const style = { display: 'block', 'max-width': '100%', height: 'auto', margin: '0 auto' };
+    applyInlineImageDisplaySize(style, asset);
+    return `<img class="msdoc-image" src="${escapeHtml(src)}" alt="" style="${styleObjectToCss(style)}">`;
 }
 function renderAttachmentNode(node) {
     const label = escapeHtml(node.asset.name || 'embedded-file');
