@@ -43,5 +43,8 @@
   "homepage": "https://github.com/wybaby168/msdoc-viewer",
   "bugs": {
     "url": "https://github.com/wybaby168/msdoc-viewer/issues"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
   }
 }

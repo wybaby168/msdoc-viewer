@@ -14,9 +14,9 @@ import type {
 function toArrayBuffer(input: ArrayBuffer | ArrayBufferView): ArrayBuffer {
   if (input instanceof ArrayBuffer) return input.slice(0);
   if (ArrayBuffer.isView(input)) {
-    return input.byteOffset === 0 && input.byteLength === input.buffer.byteLength
-      ? input.buffer.slice(0)
-      : input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+    const bytes = new Uint8Array(input.byteLength);
+    bytes.set(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    return bytes.buffer;
   }
   throw new TypeError('Expected ArrayBuffer or TypedArray');
 }

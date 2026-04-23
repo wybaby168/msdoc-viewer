@@ -22,9 +22,9 @@ import type {
 async function normalizeInput(input: ViewerInput): Promise<ArrayBuffer> {
   if (input instanceof ArrayBuffer) return input;
   if (ArrayBuffer.isView(input)) {
-    return input.byteOffset === 0 && input.byteLength === input.buffer.byteLength
-      ? input.buffer.slice(0)
-      : input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+    const bytes = new Uint8Array(input.byteLength);
+    bytes.set(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    return bytes.buffer;
   }
   if (typeof Blob !== 'undefined' && input instanceof Blob) {
     return await input.arrayBuffer();
