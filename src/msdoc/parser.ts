@@ -477,6 +477,30 @@ function buildCharSegments(
   return segments;
 }
 
+function buildCharStateAtCp(
+  cp: number,
+  chpxRuns: ChpxRun[],
+  styles: StyleCollection,
+  baseCharProps: DecodedProperty[],
+  resolveFont: (fontId: number | undefined) => FontInfo | null,
+  revisionAuthors: string[] = [],
+  cursorRef?: { index: number },
+): CharState {
+  const overlaps = getOverlappingRuns(chpxRuns, cp, cp + 1, cursorRef);
+  const directRun = overlaps.find((run) => run.cpStart <= cp && run.cpEnd > cp);
+  const directProps = directRun?.properties || [];
+  const directState = charPropsToState(directProps);
+  const charStyleProps = directState.charStyleId != null ? styles.resolveStyle(directState.charStyleId).charProps : [];
+  const finalProps = mergePropertyArrays(baseCharProps, charStyleProps, directProps);
+  const state = charPropsToState(finalProps);
+  if (state.revisionAuthorIndex != null && revisionAuthors[state.revisionAuthorIndex]) {
+    state.revisionAuthor = revisionAuthors[state.revisionAuthorIndex];
+  }
+  const font = resolveFont(state.fontFamilyId);
+  if (font) state.fontFamily = font.name || font.altName || undefined;
+  return state;
+}
+
 function buildParagraphModel(
   range: ParagraphRange,
   paragraphText: string,
@@ -502,6 +526,9 @@ function buildParagraphModel(
   const baseCharProps = paraStyle.charProps;
   const resolveFont = (fontId: number | undefined) => fonts.byIndex(fontId);
   const segments = buildCharSegments(range, paragraphText, chpxRuns, styles, baseCharProps, resolveFont, chpxCursor, revisionAuthors);
+  const markStyle = range.cpEnd > range.cpStart
+    ? buildCharStateAtCp(Math.max(range.cpStart, range.cpEnd - 1), chpxRuns, styles, baseCharProps, resolveFont, revisionAuthors, chpxCursor)
+    : (segments[segments.length - 1]?.state || buildCharStateAtCp(range.cpStart, chpxRuns, styles, baseCharProps, resolveFont, revisionAuthors, chpxCursor));
   const inlines = buildInlineNodes(segments, resolveAsset, inlineContext);
 
   return {
@@ -517,6 +544,7 @@ function buildParagraphModel(
     paraState,
     tableProps,
     tableState,
+    markStyle,
     segments,
     inlines,
   };
@@ -696,6 +724,7 @@ function paragraphToBlock(paragraph: ParagraphModel): ParagraphBlock {
     styleId: paragraph.styleId,
     styleName: paragraph.styleName,
     paraState: paragraph.paraState,
+    markStyle: paragraph.markStyle,
     inlines: paragraph.inlines,
     text: paragraph.text,
   };

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>msdoc preview</title>
+  <style>
+    html,body{margin:0;padding:0;background:#e5e7eb}
+    #app{min-height:100vh;padding:24px}
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">
+    import { createMsDocViewer } from '../dist/index.js';
+    const params = new URLSearchParams(location.search);
+    const doc = params.get('doc');
+    const view = params.get('view') || 'paged';
+    const container = document.getElementById('app');
+    const viewer = createMsDocViewer(container);
+    async function run(){
+      if(!doc) throw new Error('missing doc');
+      const rendered = await viewer.load(new URL(doc, location.href).toString());
+      const root = document.querySelector('.msdoc-root');
+      if(root) root.dataset.msdocView = view;
+      const buttons = document.querySelectorAll('.msdoc-viewer-button');
+      buttons.forEach((btn)=>btn.remove());
+      const title = document.querySelector('.msdoc-viewer-title'); if(title) title.remove();
+      const hint = document.querySelector('.msdoc-viewer-hint'); if(hint) hint.remove();
+      document.body.setAttribute('data-ready', '1');
+      window.__rendered = rendered;
+    }
+    run().catch((err)=>{
+      console.error(err);
+      document.body.setAttribute('data-error', String(err && err.message || err));
+    });
+  </script>
+</body>
+</html>

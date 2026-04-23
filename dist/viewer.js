@@ -34,12 +34,15 @@ function runtimeViewerCss() {
 .msdoc-flow-view{min-width:0}
 .msdoc-paged-view{display:flex;flex-direction:column;gap:24px;align-items:center;padding:24px;background:#f3f4f6;border-radius:16px}
 .msdoc-page{position:relative;background:#fff;border:1px solid #d1d5db;box-shadow:0 16px 40px rgba(15,23,42,.12);overflow:hidden}
-.msdoc-page-label{position:absolute;top:10px;right:12px;z-index:6;font:600 11px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#6b7280;background:rgba(255,255,255,.92);padding:3px 8px;border-radius:999px;border:1px solid #e5e7eb}
-.msdoc-page-header-band,.msdoc-page-footer-band{position:absolute;left:0;right:0;z-index:2;padding:0 8px;overflow:hidden}
+.msdoc-page-label{position:absolute;top:10px;right:12px;z-index:7;font:600 11px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#6b7280;background:rgba(255,255,255,.92);padding:3px 8px;border-radius:999px;border:1px solid #e5e7eb;display:none}
+.msdoc-page-header-band,.msdoc-page-footer-band{position:absolute;left:0;right:0;z-index:5;padding:0 8px;overflow:visible}
+.msdoc-page-header-band{top:0}
+.msdoc-page-footer-band{bottom:0}
+.msdoc-page-header-band-inner,.msdoc-page-footer-band-inner{position:relative}
 .msdoc-page-header-band .msdoc-paragraph,.msdoc-page-footer-band .msdoc-paragraph{margin-bottom:0}
 .msdoc-page-body{position:absolute;z-index:3;overflow:hidden}
 .msdoc-page-body-content{height:100%;overflow:hidden}
-.msdoc-page-overlay{position:absolute;inset:0;z-index:4;pointer-events:none}
+.msdoc-page-overlay{position:absolute;inset:0;z-index:6;pointer-events:none}
 .msdoc-page-overlay-item{position:absolute;pointer-events:auto;max-width:100%;overflow:hidden}
 .msdoc-page-overlay-item .msdoc-floating,.msdoc-page-overlay-item .msdoc-story-card{margin:0;box-shadow:none;border-color:#d1d5db;background:transparent}
 .msdoc-page-overlay-shape-asset{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;pointer-events:none}
@@ -48,14 +51,11 @@ function runtimeViewerCss() {
 .msdoc-page-overlay-item-page-number{display:flex;align-items:flex-end;justify-content:flex-end;font-size:12pt}
 .msdoc-page-overlay-item-page-number .msdoc-page-number{display:inline-block;min-width:1.5em;text-align:right}
 .msdoc-page-guides{position:absolute;inset:0;z-index:1;pointer-events:none}
-.msdoc-page-guide{position:absolute;background:rgba(59,130,246,.20)}
-.msdoc-page-guide-left,.msdoc-page-guide-right{top:0;bottom:0;width:1px}
-.msdoc-page-guide-top,.msdoc-page-guide-bottom{left:0;right:0;height:1px}
-.msdoc-page-guide-label{position:absolute;font:600 10px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#2563eb;background:rgba(255,255,255,.95);border:1px solid rgba(59,130,246,.25);border-radius:999px;padding:2px 6px}
-.msdoc-page-guide-left .msdoc-page-guide-label,.msdoc-page-guide-right .msdoc-page-guide-label{top:12px;transform:translateX(-50%)}
-.msdoc-page-guide-top .msdoc-page-guide-label,.msdoc-page-guide-bottom .msdoc-page-guide-label{left:12px;transform:translateY(-50%)}
-.msdoc-page-guide-right .msdoc-page-guide-label{transform:translateX(-50%)}
-.msdoc-page-guide-bottom .msdoc-page-guide-label{transform:translateY(-50%)}
+.msdoc-page-guide-corner{position:absolute;width:18px;height:18px}
+.msdoc-page-guide-corner-top-left{border-top:1px solid rgba(59,130,246,.42);border-left:1px solid rgba(59,130,246,.42);transform:translate(-1px,-1px)}
+.msdoc-page-guide-corner-top-right{border-top:1px solid rgba(59,130,246,.42);border-right:1px solid rgba(59,130,246,.42);transform:translate(-17px,-1px)}
+.msdoc-page-guide-corner-bottom-left{border-bottom:1px solid rgba(59,130,246,.42);border-left:1px solid rgba(59,130,246,.42);transform:translate(-1px,-17px)}
+.msdoc-page-guide-corner-bottom-right{border-bottom:1px solid rgba(59,130,246,.42);border-right:1px solid rgba(59,130,246,.42);transform:translate(-17px,-17px)}
 .msdoc-page-measure{position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;overflow:hidden}
 .msdoc-page-measure .msdoc-page-label,.msdoc-page-measure .msdoc-page-overlay,.msdoc-page-measure .msdoc-page-guides,.msdoc-page-measure .msdoc-page-header-band,.msdoc-page-measure .msdoc-page-footer-band{display:none}
 .msdoc-page-blank{background:linear-gradient(180deg,#fff,#fafafa)}
@@ -400,14 +400,11 @@ function shapeToPagePosition(shape, section) {
     const top = topBase + (twipsToPx(shape.boundsTwips.top) || 0);
     return { left, top, width, height };
 }
-function createGuide(label, className, style) {
+function createCornerGuide(className, left, top) {
     const guide = document.createElement('div');
-    guide.className = `msdoc-page-guide ${className}`;
-    Object.assign(guide.style, style);
-    const badge = document.createElement('div');
-    badge.className = 'msdoc-page-guide-label';
-    badge.textContent = label;
-    guide.appendChild(badge);
+    guide.className = `msdoc-page-guide-corner ${className}`;
+    guide.style.left = `${left}px`;
+    guide.style.top = `${top}px`;
     return guide;
 }
 function renderDynamicPageNumber(page) {
@@ -419,6 +416,32 @@ function appendHtml(target, html) {
     const range = document.createRange();
     const fragment = range.createContextualFragment(html);
     target.appendChild(fragment);
+}
+function isIgnorableChromeNode(node) {
+    if (!(node instanceof HTMLElement))
+        return false;
+    if (node.matches('table,.msdoc-table,.msdoc-attachment,.msdoc-image-fallback'))
+        return false;
+    if (node.querySelector('table,.msdoc-table,img,.msdoc-image,.msdoc-attachment,.msdoc-image-fallback'))
+        return false;
+    const text = normalizeRenderableText(node.textContent || '');
+    return !text;
+}
+function trimChromeWhitespace(container) {
+    while (isIgnorableChromeNode(container.firstElementChild))
+        container.firstElementChild?.remove();
+    while (isIgnorableChromeNode(container.lastElementChild))
+        container.lastElementChild?.remove();
+}
+function finalizeChromeBand(band, kind, metrics) {
+    const content = band.firstElementChild;
+    if (!(content instanceof HTMLElement))
+        return;
+    trimChromeWhitespace(content);
+    const minHeight = kind === 'header' ? metrics.marginTopPx : metrics.marginBottomPx;
+    const contentHeight = Math.ceil(content.offsetHeight || content.scrollHeight || 0);
+    const inset = kind === 'header' ? metrics.headerTopPx : metrics.footerBottomPx;
+    band.style.minHeight = `${Math.max(minHeight, inset + contentHeight)}px`;
 }
 function applyDynamicPageNumber(target, page) {
     const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
@@ -607,41 +630,43 @@ function renderPagedView(root, rendered) {
         pageEl.appendChild(label);
         const guides = document.createElement('div');
         guides.className = 'msdoc-page-guides';
-        guides.appendChild(createGuide(`${Math.round(section.page.marginLeftTwips / 144) / 10}in`, 'msdoc-page-guide-left', { left: `${metrics.marginLeftPx}px` }));
-        guides.appendChild(createGuide(`${Math.round(section.page.marginRightTwips / 144) / 10}in`, 'msdoc-page-guide-right', { left: `${metrics.widthPx - metrics.marginRightPx}px` }));
-        guides.appendChild(createGuide(`${Math.round(section.page.marginTopTwips / 144) / 10}in`, 'msdoc-page-guide-top', { top: `${metrics.marginTopPx}px` }));
-        guides.appendChild(createGuide(`${Math.round(section.page.marginBottomTwips / 144) / 10}in`, 'msdoc-page-guide-bottom', { top: `${metrics.heightPx - metrics.marginBottomPx}px` }));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-top-left', metrics.marginLeftPx, metrics.marginTopPx));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-top-right', metrics.widthPx - metrics.marginRightPx, metrics.marginTopPx));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-bottom-left', metrics.marginLeftPx, metrics.heightPx - metrics.marginBottomPx));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-bottom-right', metrics.widthPx - metrics.marginRightPx, metrics.heightPx - metrics.marginBottomPx));
         pageEl.appendChild(guides);
         const headerBand = document.createElement('div');
         headerBand.className = 'msdoc-page-header-band';
-        headerBand.style.top = `0px`;
         headerBand.style.left = `${metrics.marginLeftPx}px`;
         headerBand.style.width = `${metrics.bodyWidthPx}px`;
-        headerBand.style.height = `${Math.max(metrics.marginTopPx, 24)}px`;
         headerBand.style.paddingTop = `${Math.max(metrics.headerTopPx, 0)}px`;
+        const headerBandInner = document.createElement('div');
+        headerBandInner.className = 'msdoc-page-header-band-inner';
         const headerStory = pickStoryTemplate(chromeTemplates, 'header', page, sections);
         if (headerStory) {
-            appendHtml(headerBand, renderChromeContent(headerStory, page));
+            appendHtml(headerBandInner, renderChromeContent(headerStory, page));
             if (headerStory.pageNumberLike)
-                applyDynamicPageNumber(headerBand, page);
+                applyDynamicPageNumber(headerBandInner, page);
         }
+        headerBand.appendChild(headerBandInner);
         pageEl.appendChild(headerBand);
         const footerBand = document.createElement('div');
         footerBand.className = 'msdoc-page-footer-band';
         footerBand.style.left = `${metrics.marginLeftPx}px`;
         footerBand.style.width = `${metrics.bodyWidthPx}px`;
-        footerBand.style.top = `${Math.max(metrics.heightPx - metrics.marginBottomPx, 0)}px`;
-        footerBand.style.height = `${Math.max(metrics.marginBottomPx, 24)}px`;
         footerBand.style.paddingBottom = `${Math.max(metrics.footerBottomPx, 0)}px`;
         footerBand.style.display = 'flex';
         footerBand.style.flexDirection = 'column';
         footerBand.style.justifyContent = 'flex-end';
+        const footerBandInner = document.createElement('div');
+        footerBandInner.className = 'msdoc-page-footer-band-inner';
         const footerStory = pickStoryTemplate(chromeTemplates, 'footer', page, sections);
         if (footerStory) {
-            appendHtml(footerBand, renderChromeContent(footerStory, page));
+            appendHtml(footerBandInner, renderChromeContent(footerStory, page));
             if (footerStory.pageNumberLike)
-                applyDynamicPageNumber(footerBand, page);
+                applyDynamicPageNumber(footerBandInner, page);
         }
+        footerBand.appendChild(footerBandInner);
         pageEl.appendChild(footerBand);
         const body = document.createElement('div');
         body.className = 'msdoc-page-body';
@@ -671,10 +696,11 @@ function renderPagedView(root, rendered) {
                 if (!template.item)
                     continue;
                 if (!template.item.shape) {
-                    const target = kind === 'header' ? headerBand : footerBand;
+                    const target = kind === 'header' ? headerBandInner : footerBandInner;
                     appendHtml(target, renderChromeContent(template, page));
                     if (template.pageNumberLike)
                         applyDynamicPageNumber(target, page);
+                    finalizeChromeBand(kind === 'header' ? headerBand : footerBand, kind, metrics);
                     continue;
                 }
                 const position = shapeToPagePosition(template.item.shape, section);
@@ -711,6 +737,8 @@ function renderPagedView(root, rendered) {
         }
         pageEl.appendChild(overlay);
         pagedView.appendChild(pageEl);
+        finalizeChromeBand(headerBand, 'header', metrics);
+        finalizeChromeBand(footerBand, 'footer', metrics);
     }
 }
 function installViewerRuntime(container, rendered) {

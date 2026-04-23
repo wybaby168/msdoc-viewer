@@ -13,7 +13,7 @@
 - **可扩展架构**：把二进制读取、属性解码、样式继承、表格布局、渲染层完全拆分
 - **支持 Web Worker**：避免大文档解析阻塞 UI 线程
 - **生产向安全加固**：渲染层会过滤 `javascript:` / `file://` 等不安全链接，避免生成无效或危险的 HTML
-- **分页 / 文档流双视图**：Viewer 可按节属性分页，显示页边距指示器、页眉页脚带与分页效果，也可切回连续文档流
+- **分页 / 文档流双视图**：Viewer 可按节属性分页，显示 L 形页边距指示器、页眉页脚带与分页效果，也可切回连续文档流
 - **CI 就绪**：内置 GitHub Actions，自动执行 typecheck + smoke test
 
 ## 当前能力
@@ -32,7 +32,7 @@
 - 页眉页脚：按 header/footer story 渲染为页面顶部/底部区域，不再仅作为附录卡片；header textbox 中的页码等内容也会合并到页脚/页眉展示
 - 浮动元素：会优先把 `PlcfSpaMom` / `PlcfSpaHdr` 锚定的 floating shape 与可匹配的图片段落 / textbox 关联，并以接近页面布局的浮动块形式输出；无法完整还原的 shape 保留诊断占位，避免静默丢失
 - 绘图组 / 延迟 BLIP：解析 `DggInfo`、`OfficeArtBStoreContainer`、`FBSE` 与 `FOPT` 的 `pib` / `fillBlip`，并从 `WordDocument` delay stream 读取图片负载，把 floating picture / shape 绑定到真实位图资产
-- 分页 Viewer：按 section page settings 渲染纸张尺寸、页边距、页眉/页脚带、分栏和 odd/even page break 的空白页插入逻辑，可在分页和文档流之间切换
+- 分页 Viewer：按 section page settings 渲染纸张尺寸、页边距、页眉/页脚带、分栏和 odd/even page break 的空白页插入逻辑，可在分页和文档流之间切换；分页布局会保留 paragraph mark 的字符格式参与空段落高度计算，降低封面/目录类文档的纵向偏移
 - 图片：按 `PICFAndOfficeArtData` / `PICF` / `OfficeArtInlineSpContainer` / `OfficeArtBStoreContainerFileBlock` / `OfficeArtFBSE` / `OfficeArtBlip*` 解析，优先提取浏览器可直接显示的 PNG/JPEG/BMP 等位图；同时支持解析 drawing group 中 `OfficeArtFBSE.foDelay` 指向的延迟 BLIP，并兼容实际文档里位于 `WordDocument` 或 `Data` stream 的图片负载
 - 多 story 内容：主文档、脚注、尾注、批注、页眉页脚、textbox、header textbox
 - floating shape 锚点：解析 `PlcfSpaMom` / `PlcfSpaHdr` 的 `Spa` 结构，把包围框、锚定基准、环绕方式、前后文关系暴露到 AST，并自动关联可匹配的 textbox
@@ -42,7 +42,7 @@
 - OLE / ObjectPool 附件提取
 - 域代码的基础处理（例如超链接、`INCLUDEPICTURE` 外链图片）
 - 浏览器 Viewer 与 Worker Client
-- Viewer 内置 `分页 / 文档流` 切换，分页视图会根据 section/page settings 应用纸张尺寸、页边距、页眉页脚 band、浮动元素 overlay 与边距指示器
+- Viewer 内置 `分页 / 文档流` 切换，分页视图会根据 section/page settings 应用纸张尺寸、页边距、页眉页脚 band、浮动元素 overlay 与 L 形页边距指示器
 
 ## 工程结构
 

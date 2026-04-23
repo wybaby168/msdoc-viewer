@@ -374,6 +374,22 @@ function buildCharSegments(range, paragraphText, chpxRuns, styles, baseCharProps
     }
     return segments;
 }
+function buildCharStateAtCp(cp, chpxRuns, styles, baseCharProps, resolveFont, revisionAuthors = [], cursorRef) {
+    const overlaps = getOverlappingRuns(chpxRuns, cp, cp + 1, cursorRef);
+    const directRun = overlaps.find((run) => run.cpStart <= cp && run.cpEnd > cp);
+    const directProps = directRun?.properties || [];
+    const directState = charPropsToState(directProps);
+    const charStyleProps = directState.charStyleId != null ? styles.resolveStyle(directState.charStyleId).charProps : [];
+    const finalProps = mergePropertyArrays(baseCharProps, charStyleProps, directProps);
+    const state = charPropsToState(finalProps);
+    if (state.revisionAuthorIndex != null && revisionAuthors[state.revisionAuthorIndex]) {
+        state.revisionAuthor = revisionAuthors[state.revisionAuthorIndex];
+    }
+    const font = resolveFont(state.fontFamilyId);
+    if (font)
+        state.fontFamily = font.name || font.altName || undefined;
+    return state;
+}
 function buildParagraphModel(range, paragraphText, styles, fonts, chpxRuns, resolveAsset, chpxCursor, revisionAuthors = [], inlineContext = {}) {
     const directSplit = splitPropertiesByKind(range.properties || []);
     const paraStyleId = range.styleId || directSplit.para.find((item) => item.name === 'styleId')?.value || 0;
@@ -387,6 +403,9 @@ function buildParagraphModel(range, paragraphText, styles, fonts, chpxRuns, reso
     const baseCharProps = paraStyle.charProps;
     const resolveFont = (fontId) => fonts.byIndex(fontId);
     const segments = buildCharSegments(range, paragraphText, chpxRuns, styles, baseCharProps, resolveFont, chpxCursor, revisionAuthors);
+    const markStyle = range.cpEnd > range.cpStart
+        ? buildCharStateAtCp(Math.max(range.cpStart, range.cpEnd - 1), chpxRuns, styles, baseCharProps, resolveFont, revisionAuthors, chpxCursor)
+        : (segments[segments.length - 1]?.state || buildCharStateAtCp(range.cpStart, chpxRuns, styles, baseCharProps, resolveFont, revisionAuthors, chpxCursor));
     const inlines = buildInlineNodes(segments, resolveAsset, inlineContext);
     return {
         id: uniqueId('para'),
@@ -401,6 +420,7 @@ function buildParagraphModel(range, paragraphText, styles, fonts, chpxRuns, reso
         paraState,
         tableProps,
         tableState,
+        markStyle,
         segments,
         inlines,
     };
@@ -516,6 +536,7 @@ function paragraphToBlock(paragraph) {
         styleId: paragraph.styleId,
         styleName: paragraph.styleName,
         paraState: paragraph.paraState,
+        markStyle: paragraph.markStyle,
         inlines: paragraph.inlines,
         text: paragraph.text,
     };

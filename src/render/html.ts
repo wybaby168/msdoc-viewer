@@ -394,6 +394,17 @@ function inlineStyleToCss(styleState: CharState): CssStyleObject {
   return style;
 }
 
+function paragraphMarkStyleToCss(styleState: CharState | undefined): CssStyleObject {
+  if (!styleState) return {};
+  const style: CssStyleObject = {};
+  if (styleState.fontSizeHalfPoints) style['font-size'] = `${styleState.fontSizeHalfPoints / 2}pt`;
+  if (styleState.fontFamily) style['font-family'] = `'${String(styleState.fontFamily).replace(/'/g, "\'")}', sans-serif`;
+  if (styleState.bold || styleState.boldBi) style['font-weight'] = '700';
+  if (styleState.italic || styleState.italicBi) style['font-style'] = 'italic';
+  if (styleState.rtl) style.direction = 'rtl';
+  return style;
+}
+
 function revisionTitle(styleState: CharState): string {
   const parts: string[] = [];
   if (styleState.revisionInsert) parts.push('Inserted text');
@@ -507,8 +518,9 @@ function renderParagraphBlock(block: ParagraphBlock, options: { inline?: boolean
     paraStyle['margin-top'] = '0';
     paraStyle['margin-bottom'] = '0';
   }
-  const style = styleObjectToCss(paraStyle);
   const body = renderInlineNodes(block.inlines || []);
+  if (!body) Object.assign(paraStyle, paragraphMarkStyleToCss(block.markStyle));
+  const style = styleObjectToCss(paraStyle);
   const empty = body || '<br>';
   const classNames = ['msdoc-paragraph'];
   if (!options.inline) classNames.push('msdoc-flow-block');
@@ -938,13 +950,13 @@ function renderShapesAppendix(title: string, shapes: ShapeAnchorInfo[], assetByI
 
 export function defaultMsDocCss(): string {
   return `
-.msdoc-root{box-sizing:border-box;max-width:100%;padding:24px;background:#fff;color:#111;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.msdoc-root{box-sizing:border-box;max-width:100%;padding:24px;background:#fff;color:#111;font:14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .msdoc-root *{box-sizing:border-box}
 .msdoc-body{position:relative}
-.msdoc-paragraph{margin:0 0 8px;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+.msdoc-paragraph{margin:0;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
 .msdoc-paragraph:last-child{margin-bottom:0}
-.msdoc-table{margin:12px 0;max-width:100%}
-.msdoc-cell{padding:6px 8px;vertical-align:top;word-break:break-word;overflow-wrap:anywhere}
+.msdoc-table{margin:0;max-width:100%;border-collapse:collapse;border-spacing:0}
+.msdoc-cell{padding:0;vertical-align:top;word-break:break-word;overflow-wrap:anywhere}
 .msdoc-link{color:#1a73e8;text-decoration:none}
 .msdoc-link:hover{text-decoration:underline}
 .msdoc-inline-group{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;max-width:100%}

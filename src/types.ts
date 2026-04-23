@@ -649,6 +649,7 @@ export interface ParagraphBlock {
   styleId: number;
   styleName: string;
   paraState: ParaState;
+  markStyle?: CharState;
   inlines: InlineNode[];
   text: string;
 }
@@ -846,6 +847,7 @@ export interface ParagraphModel {
   paraState: ParaState;
   tableProps: DecodedProperty[];
   tableState: TableState;
+  markStyle?: CharState;
   segments: CharSegment[];
   inlines: InlineNode[];
 }
