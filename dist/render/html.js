@@ -127,7 +127,7 @@ function isPageNumberLike(text) {
     const normalized = normalizeRenderableText(text);
     if (!normalized)
         return false;
-    return /^[-–—\s\d]+$/.test(normalized) || /\bPAGE\b/i.test(String(text || ''));
+    return /^[-–—\s\d]+$/.test(normalized) || /\b(?:PAGE|NUMPAGES|SECTIONPAGES)\b/i.test(String(text || ''));
 }
 function signatureForBlocks(blocks, text) {
     const imageCount = blocks.reduce((count, block) => count + (block.type === 'paragraph' ? block.inlines.filter((node) => node.type === 'image').length : 0), 0);
@@ -478,6 +478,34 @@ function renderCommentRefNode(node) {
     const title = node.author ? ` title="${escapeHtml(node.author)}"` : '';
     return `<sup class="msdoc-comment-ref"${title}><a class="msdoc-link" href="${href}">💬${escapeHtml(node.label)}</a></sup>`;
 }
+function renderFieldNode(node) {
+    const text = escapeHtml(normalizeDisplayText(node.displayText || ''));
+    const style = styleObjectToCss(inlineStyleToCss(node.style));
+    const classes = [`msdoc-field`, `msdoc-field-${slugify(node.fieldType)}`];
+    const attrs = [
+        ` data-field-type="${escapeHtml(node.fieldType)}"`,
+        node.instruction ? ` data-field-instruction="${escapeHtml(node.instruction)}"` : '',
+        node.target ? ` data-field-target="${escapeHtml(node.target)}"` : '',
+    ].join('');
+    const span = `<span class="${classes.join(' ')}"${attrs}${style ? ` style="${style}"` : ''}>${text}</span>`;
+    const href = sanitizeLinkHref(node.href);
+    if (href)
+        return `<a class="msdoc-link msdoc-field-link" href="${escapeHtml(href)}">${span}</a>`;
+    return span;
+}
+function renderBookmarkAnchors(block) {
+    return (block.bookmarkStarts || [])
+        .map((bookmark) => `<span id="${escapeHtml(bookmark.id)}" class="msdoc-bookmark-anchor" data-bookmark-name="${escapeHtml(bookmark.name)}"></span>`)
+        .join('');
+}
+function renderListLabel(block) {
+    if (!block.list)
+        return '';
+    const label = block.list.label || '';
+    const level = Math.max(0, block.list.level || 0);
+    const gap = block.list.follow === 'space' ? '&nbsp;' : block.list.follow === 'none' ? '' : '&nbsp;&nbsp;';
+    return `<span class="msdoc-list-label msdoc-list-label-level-${level}" aria-hidden="true">${escapeHtml(label)}${gap}</span>`;
+}
 function renderInlineNodes(nodes) {
     return nodes.map((node) => {
         if (node.type === 'text')
@@ -490,6 +518,8 @@ function renderInlineNodes(nodes) {
             return renderNoteRefNode(node);
         if (node.type === 'commentRef')
             return renderCommentRefNode(node);
+        if (node.type === 'field')
+            return renderFieldNode(node);
         if (node.type === 'lineBreak')
             return '<br>';
         if (node.type === 'pageBreak')
@@ -505,14 +535,18 @@ function renderParagraphBlock(block, options = {}) {
         paraStyle['margin-top'] = '0';
         paraStyle['margin-bottom'] = '0';
     }
-    const body = renderInlineNodes(block.inlines || []);
-    if (!body)
+    const inlineBody = renderInlineNodes(block.inlines || []);
+    if (!inlineBody)
         Object.assign(paraStyle, paragraphMarkStyleToCss(block.markStyle));
     const style = styleObjectToCss(paraStyle);
-    const empty = body || '<br>';
+    const bookmarkAnchors = renderBookmarkAnchors(block);
+    const listLabel = renderListLabel(block);
+    const body = `${bookmarkAnchors}${listLabel}${inlineBody || '<br>'}`;
     const classNames = ['msdoc-paragraph'];
     if (!options.inline)
         classNames.push('msdoc-flow-block');
+    if (block.list)
+        classNames.push('msdoc-list-paragraph');
     if (block.styleName)
         classNames.push(`msdoc-style-${slugify(block.styleName)}`);
     const attrs = [];
@@ -524,6 +558,13 @@ function renderParagraphBlock(block, options = {}) {
             attrs.push(' data-keep-next="1"');
         if (block.styleName)
             attrs.push(` data-style-name="${escapeHtml(block.styleName)}"`);
+        if (block.list) {
+            attrs.push(` data-list-id="${block.list.listId}"`);
+            attrs.push(` data-list-level="${block.list.level}"`);
+            attrs.push(` data-list-label="${escapeHtml(block.list.label)}"`);
+        }
+        if (block.bookmarkStarts?.length)
+            attrs.push(` data-bookmark-starts="${escapeHtml(block.bookmarkStarts.map((bookmark) => bookmark.name).join(','))}"`);
         const headingLike = /标题|题|Title|Heading/i.test(block.styleName || '')
             || (Boolean(normalizeRenderableText(block.text)) && normalizeRenderableText(block.text).length <= 40 && block.paraState.alignment === 1 && (block.markStyle?.bold || block.inlines.some((node) => node.type === 'text' && (node.style.bold || node.style.boldBi))));
         if (headingLike)
@@ -531,7 +572,7 @@ function renderParagraphBlock(block, options = {}) {
         if (block.paraState.pageBreakBefore)
             attrs.push(' data-page-break-before="1"');
     }
-    return `<${tag} class="${classNames.join(' ')}"${style ? ` style="${style}"` : ''}${attrs.join('')}>${empty}</${tag}>`;
+    return `<${tag} class="${classNames.join(' ')}"${style ? ` style="${style}"` : ''}${attrs.join('')}>${body}</${tag}>`;
 }
 function cellStyle(cell) {
     const style = {};
@@ -961,6 +1002,12 @@ export function defaultMsDocCss() {
 .msdoc-body{position:relative}
 .msdoc-paragraph{margin:0;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
 .msdoc-paragraph:last-child{margin-bottom:0}
+.msdoc-list-paragraph{display:block}
+.msdoc-list-label{display:inline-block;min-width:2.4em;margin-right:.25em;white-space:pre;text-align:right}
+.msdoc-list-label-level-1{min-width:3.2em}.msdoc-list-label-level-2{min-width:4em}.msdoc-list-label-level-3{min-width:4.8em}
+.msdoc-bookmark-anchor{position:relative;top:-.25em}
+.msdoc-field{background:rgba(96,165,250,.08);border-radius:2px;padding:0 .05em}
+.msdoc-field-page,.msdoc-field-numpages{background:transparent;padding:0}
 .msdoc-table{margin:0;max-width:100%;border-collapse:collapse;border-spacing:0}
 .msdoc-cell{padding:0;vertical-align:top;word-break:break-word;overflow-wrap:anywhere}
 .msdoc-link{color:#1a73e8;text-decoration:none}

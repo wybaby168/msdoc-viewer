@@ -26,6 +26,9 @@
 - FKP（PAPX / CHPX）属性读取
 - STSH 样式表解析与样式继承
 - 字体表读取
+- DOP / document properties：解析 `Dop` / `DopBase` 的版本、默认制表位、文档统计与兼容性诊断，把文档级设置暴露到 AST
+- 自动编号 / 多级列表：解析 `PlfLst`、`LSTF`、`LVL/LVLF`、`PlfLfo`、`LFO/LFOLVL`，按 `sprmPIlfo` / `sprmPIlvl` 为段落计算显示编号；支持 decimal、Roman、letter、bullet 与 start-at override
+- 书签 / 交叉引用基础：解析 `SttbfBkmk`、`PlcfBkf`、`PlcfBkl` / `FBKF`，在段落 AST 与 HTML 中输出稳定锚点；`REF` / `PAGEREF` 在无结果文本时会安全降级为书签链接或页码占位
 - 常见字符样式：粗体、斜体、下划线、删除线、字号、颜色、高亮、大小写、上下标、字体切换
 - 常见段落样式：对齐、缩进、段前后距、行距、分页控制、边框
 - 表格：`sprmTDefTable`、单元格宽度、横向/纵向合并、边框、垂直对齐、nowrap、fitText，以及对“cell mark 段落 + row end 段落”混合表格的稳健聚合，避免老 `.doc` 把单元格内容拆成普通段落
@@ -40,7 +43,7 @@
 - 矢量图：对常见 `EMF` / `WMF` 形状记录做纯前端 SVG 转换，浏览器可直接显示
 - 链接图片：识别 `stPicName` / 外链目标，无法内嵌的本地 `file://` 图片会以非点击型回退占位展示，而不是输出损坏的 `<img>` 或不可用链接
 - OLE / ObjectPool 附件提取
-- 域代码的基础处理（例如超链接、`INCLUDEPICTURE` 外链图片）
+- 域代码处理：支持嵌套复杂域结构，识别并保留/求值 `HYPERLINK`、`INCLUDEPICTURE`、`PAGE`、`NUMPAGES`、`REF`、`PAGEREF`、`SEQ`、`DATE`、`TIME`、`TOC`、`MERGEFIELD`、`FORMTEXT`、`EMBED`、`LINK` 等常见 field instruction；已有 field result 时保留 Word 结果，无结果时生成只读 fallback 节点
 - 浏览器 Viewer 与 Worker Client
 - Viewer 内置 `分页 / 文档流` 切换，分页视图会根据 section/page settings 应用纸张尺寸、页边距、页眉页脚 band、浮动元素 overlay 与向外开口的 L 形页边距指示器
 
@@ -60,6 +63,9 @@ src/
     properties.ts    # PAPX / CHPX / TAPX 到状态对象的归并
     styles.ts        # STSH / 样式继承
     fonts.ts         # 字体表
+    dop.ts           # Dop / document properties
+    lists.ts         # PlfLst / PlfLfo 自动编号
+    bookmarks.ts     # SttbfBkmk / PlcfBkf / PlcfBkl 书签
     objects.ts       # 图片 / OfficeArt / OLE / ObjectPool
     parser.ts        # 主解析流程，输出 AST
   render/
@@ -152,6 +158,9 @@ import type { MsDocParseResult } from 'msdoc-viewer';
 - `meta`: 文档元数据与统计
 - `fonts`: 字体表摘要
 - `styles`: 样式表摘要
+- `documentProperties`: DOP / document-level settings 摘要
+- `lists`: 自动编号 / 多级列表定义与 override 摘要
+- `bookmarks`: 文档书签范围与 HTML anchor id
 - `blocks`: 结构化块级 AST（段落、表格、脚注/尾注、批注、页眉页脚、textbox、floating shape、附件）
 - `assets`: 图片 / 附件资产
 
@@ -283,7 +292,9 @@ npm run smoke
 6. 验证本地外链图片不会生成 `file://` 可点击链接
 7. 验证 `PlcfSpaMom` / `PlcfSpaHdr` 浮动 shape 锚点会被解析并渲染为结构化元数据
 8. 验证渲染层会清理 `javascript:` 等不安全链接，并避免嵌套 `<a>`
-9. 输出 `test/rendered-sample.html` 与 `test/rendered-image-sample.html`
+9. 验证 DOP / lists / bookmarks 会暴露到解析结果
+10. 验证自动编号 label 计算与安全 field/bookmark 渲染
+11. 输出 `test/rendered-sample.html` 与 `test/rendered-image-sample.html`
 
 如果你要手工打开 demo：
 
@@ -292,19 +303,15 @@ npm run build
 # 然后用任意静态服务器打开 demo/index.html
 ```
 
-## 已知边界
+## 浏览器边界与安全降级
 
-MS-DOC 是历史包袱很重的二进制格式，虽然主链路已经完整重构，但以下场景仍建议用更多真实样本持续压测：
+当前版本已经补齐浏览器预览可实现的 MS-DOC 主链路：自动编号、书签/交叉引用、DOP 文档设置、常见复杂域、绘图组图片、分页、页眉页脚、表格和多 story 内容都进入 AST 和渲染层。仍不会、也不应该在浏览器里执行以下内容：
 
-- 极端复杂的嵌套表格
-- 压缩的 EMF / WMF metafile BLIP（当前已支持直接读取的常见 EMF/WMF 记录到 SVG，但未内置通用 deflate 解压器）
-- 复杂 OfficeArt shape / textbox 的高级几何、旋转、裁剪和更接近 Word 的文本环绕
-- 修订/批注/页眉页脚在极少数兼容模式文档中的边角差异
-- 非常规域代码组合
-- 少见的 OLE 嵌入形式
-- 某些兼容模式下的边角 sprm 变体
+- VBA 宏、ActiveX 控件或 OLE 对象的运行时逻辑
+- 需要 Word 内核实时重算的第三方插件对象
+- 与打印机驱动、系统字体缺失、平台 GDI 相关的像素级副作用
 
-这些场景并不影响当前的整体架构，后续继续扩展时可直接在现有 TS 类型体系上增量补强。对于常见业务型 `.doc`、包含表格/批注/脚注/页眉页脚/内嵌图片/常见 EMF-WMF 矢量图的历史文档，这个版本已经更适合在生产环境灰度接入并持续用真实样本回归。
+这些内容会以附件、占位、只读 field fallback 或结构化 warning 的方式安全降级。目标是生产预览的“内容可读、结构准确、样式尽量还原”，而不是执行 Word 文档里的代码。
 
 ## 许可证
 

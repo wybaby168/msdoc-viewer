@@ -1,10 +1,13 @@
 import { parseCFB } from '../core/cfb.js';
 import { cleanTextControlChars, pushWarning, shallowEqual, uniqueId } from '../core/utils.js';
+import { parseBookmarks } from './bookmarks.js';
 import { parseClx, buildPieceTextCache, getTextByCp, splitParagraphRanges } from './clx.js';
 import { DOC_CONTROL } from './constants.js';
+import { parseDop } from './dop.js';
 import { parseFib } from './fib.js';
 import { readChpxRuns, readPapxRuns, type ChpxRun, type PapxRun } from './fkp.js';
 import { parseFonts } from './fonts.js';
+import { applyListFormatting, parseLists } from './lists.js';
 import { parseDrawingGroup, resolveHeaderAnchorBinding } from './drawings.js';
 import { extractObjectPool, extractPictureAsset } from './objects.js';
 import { readShapeAnchors } from './shapes.js';
@@ -28,6 +31,7 @@ import {
 import { mergePropertyArrays, parseStyles, splitPropertiesByKind } from './styles.js';
 import type {
   AttachmentAsset,
+  BookmarkInfo,
   CharSegment,
   CharState,
   CommentItem,
@@ -40,6 +44,7 @@ import type {
   HeadersBlock,
   ImageAsset,
   InlineNode,
+  ListCollectionSummary,
   MsDocAsset,
   MsDocParseOptions,
   MsDocParseResult,
@@ -84,30 +89,41 @@ function normalizeTextStyleName(name: unknown): string {
   return String(name || '').trim();
 }
 
+function fieldTokens(value: string): string[] {
+  return value.match(/"[^"]*"|\S+/g)?.map((token) => token.replace(/^"|"$/g, '')) || [];
+}
+
 function decodeFieldInstruction(instruction: unknown): FieldInstruction | null {
   const normalized = String(instruction || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
-  const upper = normalized.toUpperCase();
-  if (upper.startsWith('HYPERLINK')) {
-    const body = normalized.slice(9).trim();
-    const quoted = body.match(/"([^"]+)"/);
-    const href = quoted?.[1] || body.split(/\s+/)[0] || '';
+  const tokens = fieldTokens(normalized);
+  const keyword = String(tokens[0] || '').toUpperCase();
+  const firstArg = tokens.find((token, index) => index > 0 && !token.startsWith('\\')) || '';
+
+  if (keyword === 'HYPERLINK') {
+    const href = firstArg || '';
     return href ? { type: 'hyperlink', href } : null;
   }
-  if (upper.startsWith('INCLUDEPICTURE')) {
-    const body = normalized.slice('INCLUDEPICTURE'.length).trim();
-    const quoted = body.match(/"([^"]+)"/);
-    return { type: 'includePicture', target: quoted?.[1] || body.split(/\s+/)[0] || '' };
+  if (keyword === 'INCLUDEPICTURE') {
+    return { type: 'includePicture', target: firstArg || '' };
   }
-  if (upper.startsWith('EMBED')) {
-    return { type: 'embed', raw: normalized };
+  if (keyword === 'PAGE') return { type: 'page', raw: normalized };
+  if (keyword === 'NUMPAGES' || keyword === 'SECTIONPAGES') return { type: 'numpages', raw: normalized };
+  if (keyword === 'REF') return { type: 'ref', target: firstArg || '', raw: normalized };
+  if (keyword === 'PAGEREF') return { type: 'pageref', target: firstArg || '', raw: normalized };
+  if (keyword === 'SEQ') return { type: 'seq', name: firstArg || 'SEQ', raw: normalized };
+  if (keyword === 'DATE' || keyword === 'SAVEDATE' || keyword === 'CREATEDATE' || keyword === 'PRINTDATE') {
+    const formatSwitchIndex = tokens.findIndex((token) => token === '\\@');
+    return { type: 'date', format: formatSwitchIndex >= 0 ? tokens[formatSwitchIndex + 1] : undefined, raw: normalized };
   }
-  if (upper.startsWith('LINK')) {
-    return { type: 'link', raw: normalized };
-  }
+  if (keyword === 'TIME') return { type: 'time', raw: normalized };
+  if (keyword === 'TOC') return { type: 'toc', raw: normalized };
+  if (keyword === 'MERGEFIELD') return { type: 'mergefield', name: firstArg || '', raw: normalized };
+  if (keyword === 'FORMTEXT') return { type: 'formtext', raw: normalized };
+  if (keyword === 'EMBED') return { type: 'embed', raw: normalized };
+  if (keyword === 'LINK') return { type: 'link', raw: normalized };
   return { type: 'unknown', raw: normalized };
 }
-
 
 function isRenderableExternalImageUrl(url: string): boolean {
   return /^(?:https?:|blob:)/i.test(url) || /^data:image\//i.test(url);
@@ -168,6 +184,44 @@ interface FieldFrame {
 }
 
 
+function fieldFallbackText(parsed: FieldInstruction | null, context: InlineBuildContext): { text: string; target?: string; href?: string } | null {
+  if (!parsed) return null;
+  switch (parsed.type) {
+    case 'page':
+      return { text: 'PAGE' };
+    case 'numpages':
+      return { text: 'NUMPAGES' };
+    case 'seq': {
+      const counters = context.sequenceCounters || new Map<string, number>();
+      context.sequenceCounters = counters;
+      const key = parsed.name || 'SEQ';
+      const next = (counters.get(key) || 0) + 1;
+      counters.set(key, next);
+      return { text: String(next) };
+    }
+    case 'date':
+    case 'time':
+      return { text: new Date().toLocaleString() };
+    case 'ref': {
+      const bookmark = context.bookmarksByName?.get(parsed.target) || context.bookmarksByName?.get(parsed.target.toLowerCase());
+      return { text: bookmark?.name || parsed.target, target: bookmark?.id, href: bookmark ? `#${bookmark.id}` : undefined };
+    }
+    case 'pageref': {
+      const bookmark = context.bookmarksByName?.get(parsed.target) || context.bookmarksByName?.get(parsed.target.toLowerCase());
+      return { text: bookmark ? 'PAGE' : parsed.target, target: bookmark?.id, href: bookmark ? `#${bookmark.id}` : undefined };
+    }
+    case 'mergefield':
+      return { text: parsed.name ? `«${parsed.name}»` : '«MERGEFIELD»' };
+    case 'formtext':
+      return { text: '□' };
+    case 'toc':
+      return { text: '' };
+    default:
+      return null;
+  }
+}
+
+
 interface NoteReferenceInfo {
   kind: 'footnote' | 'endnote';
   id: string;
@@ -183,6 +237,8 @@ interface CommentReferenceInfo {
 interface InlineBuildContext {
   noteRefs?: Map<number, NoteReferenceInfo>;
   commentRefs?: Map<number, CommentReferenceInfo>;
+  bookmarksByName?: Map<string, BookmarkInfo>;
+  sequenceCounters?: Map<string, number>;
 }
 
 interface ParsedStoryContent {
@@ -289,6 +345,7 @@ function inlineNodesToPlainText(nodes: InlineNode[]): string {
     if (node.type === 'text') return node.text;
     if (node.type === 'lineBreak' || node.type === 'pageBreak') return '\n';
     if (node.type === 'noteRef' || node.type === 'commentRef') return node.label;
+    if (node.type === 'field') return node.displayText;
     return '';
   }).join('');
 }
@@ -354,6 +411,20 @@ function buildInlineNodes(
         if (current.parsed?.type === 'includePicture' && !nodes.some((node) => node.type === 'image' || node.type === 'attachment')) {
           const asset = createFieldImageAsset(current.parsed.target);
           if (asset) nodes = [{ type: 'image', asset, style: current.resultStyle || segment.state }];
+        }
+        if (!nodes.length) {
+          const fallback = fieldFallbackText(current.parsed, context);
+          if (fallback?.text) {
+            nodes = [{
+              type: 'field',
+              fieldType: current.parsed?.type || 'unknown',
+              instruction: current.instruction,
+              displayText: fallback.text,
+              target: fallback.target,
+              href: fallback.href,
+              style: current.resultStyle || segment.state,
+            }];
+          }
         }
         if (current.parsed?.type === 'hyperlink') {
           const href = current.parsed.href;
@@ -545,6 +616,9 @@ function buildParagraphModel(
     tableProps,
     tableState,
     markStyle,
+    list: undefined,
+    bookmarkStarts: undefined,
+    bookmarkEnds: undefined,
     segments,
     inlines,
   };
@@ -579,6 +653,16 @@ function buildRangesForCpInterval(
   }));
 }
 
+function assignBookmarksToParagraphs(paragraphs: ParagraphModel[], bookmarks: BookmarkInfo[]): void {
+  if (!bookmarks.length || !paragraphs.length) return;
+  for (const paragraph of paragraphs) {
+    const starts = bookmarks.filter((bookmark) => bookmark.cpStart >= paragraph.cpStart && bookmark.cpStart <= paragraph.cpEnd);
+    const ends = bookmarks.filter((bookmark) => bookmark.cpEnd >= paragraph.cpStart && bookmark.cpEnd <= paragraph.cpEnd);
+    if (starts.length) paragraph.bookmarkStarts = starts;
+    if (ends.length) paragraph.bookmarkEnds = ends;
+  }
+}
+
 function buildParagraphModelsForInterval(
   cpStart: number,
   cpEnd: number,
@@ -594,10 +678,12 @@ function buildParagraphModelsForInterval(
   revisionAuthors: string[] = [],
   inlineContext: InlineBuildContext = {},
   resolveSectionIndex: (cp: number) => number = () => 0,
+  lists?: ListCollectionSummary,
+  bookmarks: BookmarkInfo[] = [],
 ): ParagraphModel[] {
   const ranges = buildRangesForCpInterval(cpStart, cpEnd, documentText, papxRuns);
   const chpxCursor = { index: 0 };
-  return ranges.map((range) => {
+  const models = ranges.map((range) => {
     const rawParagraphText = getTextByCp(wordBytes, clx, pieceTexts, range.cpStart, range.cpEnd);
     const terminatorCandidate = range.terminator === DOC_CONTROL.paragraph || range.terminator === DOC_CONTROL.cellMark ? range.terminator : '';
     const paragraphText = terminatorCandidate && rawParagraphText.endsWith(terminatorCandidate)
@@ -617,6 +703,9 @@ function buildParagraphModelsForInterval(
     model.sectionIndex = resolveSectionIndex(range.cpStart);
     return model;
   });
+  if (lists) applyListFormatting(models, lists);
+  assignBookmarksToParagraphs(models, bookmarks);
+  return models;
 }
 
 function parseIntervalToContent(
@@ -634,6 +723,8 @@ function parseIntervalToContent(
   revisionAuthors: string[] = [],
   inlineContext: InlineBuildContext = {},
   resolveSectionIndex: (cp: number) => number = () => 0,
+  lists?: ListCollectionSummary,
+  bookmarks: BookmarkInfo[] = [],
 ): ParsedStoryContent {
   const paragraphs = buildParagraphModelsForInterval(
     cpStart,
@@ -650,6 +741,8 @@ function parseIntervalToContent(
     revisionAuthors,
     inlineContext,
     resolveSectionIndex,
+    lists,
+    bookmarks,
   );
   return {
     paragraphs,
@@ -725,6 +818,9 @@ function paragraphToBlock(paragraph: ParagraphModel): ParagraphBlock {
     styleName: paragraph.styleName,
     paraState: paragraph.paraState,
     markStyle: paragraph.markStyle,
+    list: paragraph.list,
+    bookmarkStarts: paragraph.bookmarkStarts,
+    bookmarkEnds: paragraph.bookmarkEnds,
     inlines: paragraph.inlines,
     text: paragraph.text,
   };
@@ -1193,6 +1289,14 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
 
   const styles = parseStyles(tableBytes, fib.fibRgFcLcb);
   const fonts = parseFonts(tableBytes, fib.fibRgFcLcb);
+  const documentProperties = parseDop(tableBytes, fib.fibRgFcLcb, fib);
+  const lists = parseLists(tableBytes, fib.fibRgFcLcb);
+  const bookmarks = parseBookmarks(tableBytes, fib.fibRgFcLcb);
+  const bookmarksByName = new Map<string, BookmarkInfo>();
+  for (const bookmark of bookmarks) {
+    bookmarksByName.set(bookmark.name, bookmark);
+    bookmarksByName.set(bookmark.name.toLowerCase(), bookmark);
+  }
   const revisionAuthors = parseSttbfRMark(tableBytes, fib.fibRgFcLcb);
   const commentAuthors = parseXstArray(tableBytes, fib.fibRgFcLcb);
   const chpxRuns = readChpxRuns(wordBytes, tableBytes, fib, clx)
@@ -1228,8 +1332,10 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
       chpxRuns,
       resolveAsset,
       revisionAuthors,
-      inlineContext,
+      { ...inlineContext, bookmarksByName, sequenceCounters: inlineContext.sequenceCounters || new Map<string, number>() },
       resolveSectionIndex,
+      lists,
+      bookmarks,
     );
   };
 
@@ -1458,6 +1564,8 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
         shapes: mainShapeAnchors.length,
         headerShapes: headerShapeAnchors.length,
         sections: sections.length,
+        lists: lists.definitions.length,
+        bookmarks: bookmarks.length,
       },
     },
     fonts: fonts.fonts,
@@ -1469,6 +1577,9 @@ export function parseMsDoc(input: ArrayBuffer | Uint8Array | ArrayBufferView, op
       next: style.stdfBase?.istdNext,
     })),
     sections,
+    documentProperties,
+    lists,
+    bookmarks,
     blocks,
     assets,
   };

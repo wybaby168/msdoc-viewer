@@ -467,20 +467,31 @@ function finalizeChromeBand(band, kind, metrics) {
     const inset = kind === 'header' ? metrics.headerTopPx : metrics.footerBottomPx;
     band.style.minHeight = `${Math.max(minHeight, inset + contentHeight)}px`;
 }
-function applyDynamicPageNumber(target, page) {
-    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+function applyDynamicPageNumber(target, page, totalPageCount) {
     let replaced = false;
+    for (const element of Array.from(target.querySelectorAll('.msdoc-field-page'))) {
+        element.textContent = String(page.displayPageNumber);
+        replaced = true;
+    }
+    for (const element of Array.from(target.querySelectorAll('.msdoc-field-numpages,.msdoc-field-sectionpages'))) {
+        element.textContent = String(totalPageCount);
+        replaced = true;
+    }
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
         const textNode = walker.currentNode;
         const value = textNode.nodeValue || '';
         if (!value.trim())
             continue;
-        if (/\bPAGE\b/i.test(value)) {
-            textNode.nodeValue = value.replace(/\bPAGE\b(?:\s+\\\*\s+MERGEFORMAT)?/ig, String(page.displayPageNumber));
+        let nextValue = value;
+        nextValue = nextValue.replace(/\b(?:NUMPAGES|SECTIONPAGES)\b(?:\s+\\\*\s+MERGEFORMAT)?/ig, String(totalPageCount));
+        nextValue = nextValue.replace(/\bPAGE\b(?:\s+\\\*\s+MERGEFORMAT)?/ig, String(page.displayPageNumber));
+        if (nextValue !== value) {
+            textNode.nodeValue = nextValue;
             replaced = true;
             continue;
         }
-        if (/\d+/.test(value)) {
+        if (/\d+/.test(value) && !replaced) {
             textNode.nodeValue = value.replace(/\d+/, String(page.displayPageNumber));
             replaced = true;
             break;
@@ -670,7 +681,7 @@ function renderPagedView(root, rendered) {
         if (headerStory) {
             appendHtml(headerBandInner, renderChromeContent(headerStory, page));
             if (headerStory.pageNumberLike)
-                applyDynamicPageNumber(headerBandInner, page);
+                applyDynamicPageNumber(headerBandInner, page, pages.length);
         }
         headerBand.appendChild(headerBandInner);
         pageEl.appendChild(headerBand);
@@ -688,7 +699,7 @@ function renderPagedView(root, rendered) {
         if (footerStory) {
             appendHtml(footerBandInner, renderChromeContent(footerStory, page));
             if (footerStory.pageNumberLike)
-                applyDynamicPageNumber(footerBandInner, page);
+                applyDynamicPageNumber(footerBandInner, page, pages.length);
         }
         footerBand.appendChild(footerBandInner);
         pageEl.appendChild(footerBand);
@@ -723,7 +734,7 @@ function renderPagedView(root, rendered) {
                     const target = kind === 'header' ? headerBandInner : footerBandInner;
                     appendHtml(target, renderChromeContent(template, page));
                     if (template.pageNumberLike)
-                        applyDynamicPageNumber(target, page);
+                        applyDynamicPageNumber(target, page, pages.length);
                     finalizeChromeBand(kind === 'header' ? headerBand : footerBand, kind, metrics);
                     continue;
                 }
@@ -746,7 +757,7 @@ function renderPagedView(root, rendered) {
                 contentEl.className = 'msdoc-page-overlay-item-content';
                 appendHtml(contentEl, renderChromeContent(template, page));
                 if (template.pageNumberLike)
-                    applyDynamicPageNumber(contentEl, page);
+                    applyDynamicPageNumber(contentEl, page, pages.length);
                 itemEl.appendChild(contentEl);
                 overlay.appendChild(itemEl);
             }

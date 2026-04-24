@@ -1,10 +1,13 @@
 import { parseCFB } from '../core/cfb.js';
 import { cleanTextControlChars, pushWarning, shallowEqual, uniqueId } from '../core/utils.js';
+import { parseBookmarks } from './bookmarks.js';
 import { parseClx, buildPieceTextCache, getTextByCp, splitParagraphRanges } from './clx.js';
 import { DOC_CONTROL } from './constants.js';
+import { parseDop } from './dop.js';
 import { parseFib } from './fib.js';
 import { readChpxRuns, readPapxRuns } from './fkp.js';
 import { parseFonts } from './fonts.js';
+import { applyListFormatting, parseLists } from './lists.js';
 import { parseDrawingGroup, resolveHeaderAnchorBinding } from './drawings.js';
 import { extractObjectPool, extractPictureAsset } from './objects.js';
 import { readShapeAnchors } from './shapes.js';
@@ -30,28 +33,49 @@ function getOverlappingRuns(runs, cpStart, cpEnd, cursorRef) {
 function normalizeTextStyleName(name) {
     return String(name || '').trim();
 }
+function fieldTokens(value) {
+    return value.match(/"[^"]*"|\S+/g)?.map((token) => token.replace(/^"|"$/g, '')) || [];
+}
 function decodeFieldInstruction(instruction) {
     const normalized = String(instruction || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
     if (!normalized)
         return null;
-    const upper = normalized.toUpperCase();
-    if (upper.startsWith('HYPERLINK')) {
-        const body = normalized.slice(9).trim();
-        const quoted = body.match(/"([^"]+)"/);
-        const href = quoted?.[1] || body.split(/\s+/)[0] || '';
+    const tokens = fieldTokens(normalized);
+    const keyword = String(tokens[0] || '').toUpperCase();
+    const firstArg = tokens.find((token, index) => index > 0 && !token.startsWith('\\')) || '';
+    if (keyword === 'HYPERLINK') {
+        const href = firstArg || '';
         return href ? { type: 'hyperlink', href } : null;
     }
-    if (upper.startsWith('INCLUDEPICTURE')) {
-        const body = normalized.slice('INCLUDEPICTURE'.length).trim();
-        const quoted = body.match(/"([^"]+)"/);
-        return { type: 'includePicture', target: quoted?.[1] || body.split(/\s+/)[0] || '' };
+    if (keyword === 'INCLUDEPICTURE') {
+        return { type: 'includePicture', target: firstArg || '' };
     }
-    if (upper.startsWith('EMBED')) {
+    if (keyword === 'PAGE')
+        return { type: 'page', raw: normalized };
+    if (keyword === 'NUMPAGES' || keyword === 'SECTIONPAGES')
+        return { type: 'numpages', raw: normalized };
+    if (keyword === 'REF')
+        return { type: 'ref', target: firstArg || '', raw: normalized };
+    if (keyword === 'PAGEREF')
+        return { type: 'pageref', target: firstArg || '', raw: normalized };
+    if (keyword === 'SEQ')
+        return { type: 'seq', name: firstArg || 'SEQ', raw: normalized };
+    if (keyword === 'DATE' || keyword === 'SAVEDATE' || keyword === 'CREATEDATE' || keyword === 'PRINTDATE') {
+        const formatSwitchIndex = tokens.findIndex((token) => token === '\\@');
+        return { type: 'date', format: formatSwitchIndex >= 0 ? tokens[formatSwitchIndex + 1] : undefined, raw: normalized };
+    }
+    if (keyword === 'TIME')
+        return { type: 'time', raw: normalized };
+    if (keyword === 'TOC')
+        return { type: 'toc', raw: normalized };
+    if (keyword === 'MERGEFIELD')
+        return { type: 'mergefield', name: firstArg || '', raw: normalized };
+    if (keyword === 'FORMTEXT')
+        return { type: 'formtext', raw: normalized };
+    if (keyword === 'EMBED')
         return { type: 'embed', raw: normalized };
-    }
-    if (upper.startsWith('LINK')) {
+    if (keyword === 'LINK')
         return { type: 'link', raw: normalized };
-    }
     return { type: 'unknown', raw: normalized };
 }
 function isRenderableExternalImageUrl(url) {
@@ -105,6 +129,43 @@ function mergeTextNode(target, node) {
         return;
     }
     target.push(node);
+}
+function fieldFallbackText(parsed, context) {
+    if (!parsed)
+        return null;
+    switch (parsed.type) {
+        case 'page':
+            return { text: 'PAGE' };
+        case 'numpages':
+            return { text: 'NUMPAGES' };
+        case 'seq': {
+            const counters = context.sequenceCounters || new Map();
+            context.sequenceCounters = counters;
+            const key = parsed.name || 'SEQ';
+            const next = (counters.get(key) || 0) + 1;
+            counters.set(key, next);
+            return { text: String(next) };
+        }
+        case 'date':
+        case 'time':
+            return { text: new Date().toLocaleString() };
+        case 'ref': {
+            const bookmark = context.bookmarksByName?.get(parsed.target) || context.bookmarksByName?.get(parsed.target.toLowerCase());
+            return { text: bookmark?.name || parsed.target, target: bookmark?.id, href: bookmark ? `#${bookmark.id}` : undefined };
+        }
+        case 'pageref': {
+            const bookmark = context.bookmarksByName?.get(parsed.target) || context.bookmarksByName?.get(parsed.target.toLowerCase());
+            return { text: bookmark ? 'PAGE' : parsed.target, target: bookmark?.id, href: bookmark ? `#${bookmark.id}` : undefined };
+        }
+        case 'mergefield':
+            return { text: parsed.name ? `«${parsed.name}»` : '«MERGEFIELD»' };
+        case 'formtext':
+            return { text: '□' };
+        case 'toc':
+            return { text: '' };
+        default:
+            return null;
+    }
 }
 function emitInline(targetStack, output, node) {
     if (!node)
@@ -199,6 +260,8 @@ function inlineNodesToPlainText(nodes) {
             return '\n';
         if (node.type === 'noteRef' || node.type === 'commentRef')
             return node.label;
+        if (node.type === 'field')
+            return node.displayText;
         return '';
     }).join('');
 }
@@ -260,6 +323,20 @@ function buildInlineNodes(segments, resolveAsset, context = {}) {
                     const asset = createFieldImageAsset(current.parsed.target);
                     if (asset)
                         nodes = [{ type: 'image', asset, style: current.resultStyle || segment.state }];
+                }
+                if (!nodes.length) {
+                    const fallback = fieldFallbackText(current.parsed, context);
+                    if (fallback?.text) {
+                        nodes = [{
+                                type: 'field',
+                                fieldType: current.parsed?.type || 'unknown',
+                                instruction: current.instruction,
+                                displayText: fallback.text,
+                                target: fallback.target,
+                                href: fallback.href,
+                                style: current.resultStyle || segment.state,
+                            }];
+                    }
                 }
                 if (current.parsed?.type === 'hyperlink') {
                     const href = current.parsed.href;
@@ -421,6 +498,9 @@ function buildParagraphModel(range, paragraphText, styles, fonts, chpxRuns, reso
         tableProps,
         tableState,
         markStyle,
+        list: undefined,
+        bookmarkStarts: undefined,
+        bookmarkEnds: undefined,
         segments,
         inlines,
     };
@@ -448,10 +528,22 @@ function buildRangesForCpInterval(cpStart, cpEnd, documentText, papxRuns) {
         properties: [],
     }));
 }
-function buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}, resolveSectionIndex = () => 0) {
+function assignBookmarksToParagraphs(paragraphs, bookmarks) {
+    if (!bookmarks.length || !paragraphs.length)
+        return;
+    for (const paragraph of paragraphs) {
+        const starts = bookmarks.filter((bookmark) => bookmark.cpStart >= paragraph.cpStart && bookmark.cpStart <= paragraph.cpEnd);
+        const ends = bookmarks.filter((bookmark) => bookmark.cpEnd >= paragraph.cpStart && bookmark.cpEnd <= paragraph.cpEnd);
+        if (starts.length)
+            paragraph.bookmarkStarts = starts;
+        if (ends.length)
+            paragraph.bookmarkEnds = ends;
+    }
+}
+function buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}, resolveSectionIndex = () => 0, lists, bookmarks = []) {
     const ranges = buildRangesForCpInterval(cpStart, cpEnd, documentText, papxRuns);
     const chpxCursor = { index: 0 };
-    return ranges.map((range) => {
+    const models = ranges.map((range) => {
         const rawParagraphText = getTextByCp(wordBytes, clx, pieceTexts, range.cpStart, range.cpEnd);
         const terminatorCandidate = range.terminator === DOC_CONTROL.paragraph || range.terminator === DOC_CONTROL.cellMark ? range.terminator : '';
         const paragraphText = terminatorCandidate && rawParagraphText.endsWith(terminatorCandidate)
@@ -461,9 +553,13 @@ function buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes
         model.sectionIndex = resolveSectionIndex(range.cpStart);
         return model;
     });
+    if (lists)
+        applyListFormatting(models, lists);
+    assignBookmarksToParagraphs(models, bookmarks);
+    return models;
 }
-function parseIntervalToContent(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}, resolveSectionIndex = () => 0) {
-    const paragraphs = buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext, resolveSectionIndex);
+function parseIntervalToContent(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors = [], inlineContext = {}, resolveSectionIndex = () => 0, lists, bookmarks = []) {
+    const paragraphs = buildParagraphModelsForInterval(cpStart, cpEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext, resolveSectionIndex, lists, bookmarks);
     return {
         paragraphs,
         blocks: buildBlocks(paragraphs),
@@ -537,6 +633,9 @@ function paragraphToBlock(paragraph) {
         styleName: paragraph.styleName,
         paraState: paragraph.paraState,
         markStyle: paragraph.markStyle,
+        list: paragraph.list,
+        bookmarkStarts: paragraph.bookmarkStarts,
+        bookmarkEnds: paragraph.bookmarkEnds,
         inlines: paragraph.inlines,
         text: paragraph.text,
     };
@@ -990,6 +1089,14 @@ export function parseMsDoc(input, options = {}) {
     const resolveMainSectionIndex = (cp) => findSectionIndex(sections, cp);
     const styles = parseStyles(tableBytes, fib.fibRgFcLcb);
     const fonts = parseFonts(tableBytes, fib.fibRgFcLcb);
+    const documentProperties = parseDop(tableBytes, fib.fibRgFcLcb, fib);
+    const lists = parseLists(tableBytes, fib.fibRgFcLcb);
+    const bookmarks = parseBookmarks(tableBytes, fib.fibRgFcLcb);
+    const bookmarksByName = new Map();
+    for (const bookmark of bookmarks) {
+        bookmarksByName.set(bookmark.name, bookmark);
+        bookmarksByName.set(bookmark.name.toLowerCase(), bookmark);
+    }
     const revisionAuthors = parseSttbfRMark(tableBytes, fib.fibRgFcLcb);
     const commentAuthors = parseXstArray(tableBytes, fib.fibRgFcLcb);
     const chpxRuns = readChpxRuns(wordBytes, tableBytes, fib, clx)
@@ -1011,7 +1118,7 @@ export function parseMsDoc(input, options = {}) {
         const resolveSectionIndex = cpIntervalStart >= storyWindows.main.cpStart && cpIntervalEnd <= storyWindows.main.cpEnd
             ? resolveMainSectionIndex
             : () => 0;
-        return parseIntervalToContent(cpIntervalStart, cpIntervalEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, inlineContext, resolveSectionIndex);
+        return parseIntervalToContent(cpIntervalStart, cpIntervalEnd, documentText, wordBytes, clx, pieceTexts, styles, fonts, papxRuns, chpxRuns, resolveAsset, revisionAuthors, { ...inlineContext, bookmarksByName, sequenceCounters: inlineContext.sequenceCounters || new Map() }, resolveSectionIndex, lists, bookmarks);
     };
     const footnoteTextEntries = readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcffndTxt, fib.fibRgFcLcb.lcbPlcffndTxt, 0);
     const footnoteRefEntries = readFixedPlc(tableBytes, fib.fibRgFcLcb.fcPlcffndRef, fib.fibRgFcLcb.lcbPlcffndRef, 2).map((entry) => ({ index: entry.index, cpStart: entry.cpStart }));
@@ -1154,6 +1261,8 @@ export function parseMsDoc(input, options = {}) {
                 shapes: mainShapeAnchors.length,
                 headerShapes: headerShapeAnchors.length,
                 sections: sections.length,
+                lists: lists.definitions.length,
+                bookmarks: bookmarks.length,
             },
         },
         fonts: fonts.fonts,
@@ -1165,6 +1274,9 @@ export function parseMsDoc(input, options = {}) {
             next: style.stdfBase?.istdNext,
         })),
         sections,
+        documentProperties,
+        lists,
+        bookmarks,
         blocks,
         assets,
     };

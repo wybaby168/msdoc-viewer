@@ -223,6 +223,86 @@ export interface FontsCollection {
   byIndex(index: number | null | undefined): FontInfo | null;
 }
 
+
+export interface MsDocDocumentProperties {
+  /** Byte length of the Dop/Dop* structure as stored in the table stream. */
+  rawLength: number;
+  /** Best-effort Dop variant derived from FIB version and Dop byte length. */
+  variant: 'Dop97' | 'Dop2000' | 'Dop2002' | 'Dop2003' | 'Dop2007' | 'Dop2010' | 'Dop2013' | 'unknown';
+  /** Default tab stop, dxaTab, in twips when present. */
+  defaultTabStopTwips?: number;
+  revisionCount?: number;
+  pageCountEstimate?: number;
+  wordCountEstimate?: number;
+  charCountEstimate?: number;
+  paragraphCountEstimate?: number;
+  compatibility: Record<string, boolean | number | string>;
+  diagnostics: Record<string, unknown>;
+}
+
+export interface ListLevelDefinition {
+  level: number;
+  startAt: number;
+  numberFormat: number;
+  alignment: number;
+  follow: 'tab' | 'space' | 'none';
+  template: string;
+  placeholderLevels: number[];
+  legal: boolean;
+  noRestart: boolean;
+  paraProps: DecodedProperty[];
+  charProps: DecodedProperty[];
+}
+
+export interface ListDefinition {
+  listId: number;
+  tplc: number;
+  styleIds: number[];
+  simple: boolean;
+  autoNumber: boolean;
+  hybrid: boolean;
+  levels: ListLevelDefinition[];
+}
+
+export interface ListOverrideLevel {
+  level: number;
+  startAt?: number;
+  levelOverride?: ListLevelDefinition;
+}
+
+export interface ListOverride {
+  index: number;
+  listId: number;
+  overrideCount: number;
+  fieldAutoNumberKind: number;
+  levels: ListOverrideLevel[];
+}
+
+export interface ListCollectionSummary {
+  definitions: ListDefinition[];
+  overrides: ListOverride[];
+}
+
+export interface ListNumberingInfo {
+  listId: number;
+  overrideIndex: number;
+  level: number;
+  label: string;
+  format: number;
+  template: string;
+  follow: 'tab' | 'space' | 'none';
+}
+
+export interface BookmarkInfo {
+  id: string;
+  name: string;
+  cpStart: number;
+  cpEnd: number;
+  hidden: boolean;
+  kind: number;
+  depth?: number;
+}
+
 export interface BorderSpec {
   borderType?: number;
   lineWidth?: number;
@@ -472,12 +552,43 @@ export interface FieldInstructionIncludePicture {
   target: string;
 }
 
+export interface FieldInstructionReference {
+  type: 'ref' | 'pageref';
+  target: string;
+  raw: string;
+}
+
+export interface FieldInstructionSequence {
+  type: 'seq';
+  name: string;
+  raw: string;
+}
+
+export interface FieldInstructionDateTime {
+  type: 'date' | 'time';
+  format?: string;
+  raw: string;
+}
+
+export interface FieldInstructionSimple {
+  type: 'page' | 'numpages' | 'toc' | 'mergefield' | 'formtext';
+  name?: string;
+  raw: string;
+}
+
 export interface FieldInstructionRaw {
   type: 'embed' | 'link' | 'unknown';
   raw: string;
 }
 
-export type FieldInstruction = FieldInstructionHyperlink | FieldInstructionIncludePicture | FieldInstructionRaw;
+export type FieldInstruction =
+  | FieldInstructionHyperlink
+  | FieldInstructionIncludePicture
+  | FieldInstructionReference
+  | FieldInstructionSequence
+  | FieldInstructionDateTime
+  | FieldInstructionSimple
+  | FieldInstructionRaw;
 
 export interface SectionPageSettings {
   pageWidthTwips: number;
@@ -643,7 +754,17 @@ export interface CommentReferenceInlineNode {
   author?: string;
 }
 
-export type InlineNode = TextInlineNode | ImageInlineNode | AttachmentInlineNode | LineBreakInlineNode | PageBreakInlineNode | NoteReferenceInlineNode | CommentReferenceInlineNode;
+export interface FieldInlineNode {
+  type: 'field';
+  fieldType: FieldInstruction['type'];
+  instruction: string;
+  displayText: string;
+  target?: string;
+  href?: string;
+  style: CharState;
+}
+
+export type InlineNode = TextInlineNode | ImageInlineNode | AttachmentInlineNode | LineBreakInlineNode | PageBreakInlineNode | NoteReferenceInlineNode | CommentReferenceInlineNode | FieldInlineNode;
 
 export interface ParagraphBlock {
   type: 'paragraph';
@@ -655,6 +776,9 @@ export interface ParagraphBlock {
   styleName: string;
   paraState: ParaState;
   markStyle?: CharState;
+  list?: ListNumberingInfo;
+  bookmarkStarts?: BookmarkInfo[];
+  bookmarkEnds?: BookmarkInfo[];
   inlines: InlineNode[];
   text: string;
 }
@@ -853,6 +977,9 @@ export interface ParagraphModel {
   tableProps: DecodedProperty[];
   tableState: TableState;
   markStyle?: CharState;
+  list?: ListNumberingInfo;
+  bookmarkStarts?: BookmarkInfo[];
+  bookmarkEnds?: BookmarkInfo[];
   segments: CharSegment[];
   inlines: InlineNode[];
 }
@@ -890,6 +1017,8 @@ export interface MsDocMeta {
     shapes?: number;
     headerShapes?: number;
     sections?: number;
+    lists?: number;
+    bookmarks?: number;
   };
 }
 
@@ -910,6 +1039,9 @@ export interface MsDocParseResult {
   fonts: FontInfo[];
   styles: MsDocStyleSummary[];
   sections: SectionDescriptor[];
+  documentProperties?: MsDocDocumentProperties;
+  lists?: ListCollectionSummary;
+  bookmarks?: BookmarkInfo[];
   blocks: MsDocBlock[];
   assets: MsDocAsset[];
 }

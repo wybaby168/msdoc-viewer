@@ -529,19 +529,31 @@ function finalizeChromeBand(band: HTMLElement, kind: 'header' | 'footer', metric
   band.style.minHeight = `${Math.max(minHeight, inset + contentHeight)}px`;
 }
 
-function applyDynamicPageNumber(target: HTMLElement, page: RuntimePageModel): void {
-  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+function applyDynamicPageNumber(target: HTMLElement, page: RuntimePageModel, totalPageCount: number): void {
   let replaced = false;
+  for (const element of Array.from(target.querySelectorAll<HTMLElement>('.msdoc-field-page'))) {
+    element.textContent = String(page.displayPageNumber);
+    replaced = true;
+  }
+  for (const element of Array.from(target.querySelectorAll<HTMLElement>('.msdoc-field-numpages,.msdoc-field-sectionpages'))) {
+    element.textContent = String(totalPageCount);
+    replaced = true;
+  }
+
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const textNode = walker.currentNode as Text;
     const value = textNode.nodeValue || '';
     if (!value.trim()) continue;
-    if (/\bPAGE\b/i.test(value)) {
-      textNode.nodeValue = value.replace(/\bPAGE\b(?:\s+\\\*\s+MERGEFORMAT)?/ig, String(page.displayPageNumber));
+    let nextValue = value;
+    nextValue = nextValue.replace(/\b(?:NUMPAGES|SECTIONPAGES)\b(?:\s+\\\*\s+MERGEFORMAT)?/ig, String(totalPageCount));
+    nextValue = nextValue.replace(/\bPAGE\b(?:\s+\\\*\s+MERGEFORMAT)?/ig, String(page.displayPageNumber));
+    if (nextValue !== value) {
+      textNode.nodeValue = nextValue;
       replaced = true;
       continue;
     }
-    if (/\d+/.test(value)) {
+    if (/\d+/.test(value) && !replaced) {
       textNode.nodeValue = value.replace(/\d+/, String(page.displayPageNumber));
       replaced = true;
       break;
@@ -729,7 +741,7 @@ function renderPagedView(root: HTMLElement, rendered: MsDocRenderResult): void {
     const headerStory = pickStoryTemplate(chromeTemplates, 'header', page, sections);
     if (headerStory) {
       appendHtml(headerBandInner, renderChromeContent(headerStory, page));
-      if (headerStory.pageNumberLike) applyDynamicPageNumber(headerBandInner, page);
+      if (headerStory.pageNumberLike) applyDynamicPageNumber(headerBandInner, page, pages.length);
     }
     headerBand.appendChild(headerBandInner);
     pageEl.appendChild(headerBand);
@@ -747,7 +759,7 @@ function renderPagedView(root: HTMLElement, rendered: MsDocRenderResult): void {
     const footerStory = pickStoryTemplate(chromeTemplates, 'footer', page, sections);
     if (footerStory) {
       appendHtml(footerBandInner, renderChromeContent(footerStory, page));
-      if (footerStory.pageNumberLike) applyDynamicPageNumber(footerBandInner, page);
+      if (footerStory.pageNumberLike) applyDynamicPageNumber(footerBandInner, page, pages.length);
     }
     footerBand.appendChild(footerBandInner);
     pageEl.appendChild(footerBand);
@@ -782,7 +794,7 @@ function renderPagedView(root: HTMLElement, rendered: MsDocRenderResult): void {
         if (!template.item.shape) {
           const target = kind === 'header' ? headerBandInner : footerBandInner;
           appendHtml(target, renderChromeContent(template, page));
-          if (template.pageNumberLike) applyDynamicPageNumber(target, page);
+          if (template.pageNumberLike) applyDynamicPageNumber(target, page, pages.length);
           finalizeChromeBand(kind === 'header' ? headerBand : footerBand, kind, metrics);
           continue;
         }
@@ -802,7 +814,7 @@ function renderPagedView(root: HTMLElement, rendered: MsDocRenderResult): void {
         const contentEl = document.createElement('div');
         contentEl.className = 'msdoc-page-overlay-item-content';
         appendHtml(contentEl, renderChromeContent(template, page));
-        if (template.pageNumberLike) applyDynamicPageNumber(contentEl, page);
+        if (template.pageNumberLike) applyDynamicPageNumber(contentEl, page, pages.length);
         itemEl.appendChild(contentEl);
         overlay.appendChild(itemEl);
       }
