@@ -280,6 +280,9 @@ export interface ParaState {
     spacingBefore: number;
     spacingAfter: number;
     lineSpacing: number;
+    lineSpacingMultiple?: boolean;
+    lineSpacingRule?: 'single' | 'multiple' | 'atLeast' | 'exact';
+    lineSpacingTwips?: number;
     leftIndent: number;
     rightIndent: number;
     firstLineIndent: number;
@@ -458,6 +461,8 @@ export interface SectionPageSettings {
     breakCode: number;
     restartPageNumber: boolean;
     pageNumberStart?: number;
+    documentGridLinePitchTwips?: number;
+    documentGridMode?: number;
 }
 export interface SectionDescriptor {
     index: number;

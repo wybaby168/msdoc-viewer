@@ -325,8 +325,13 @@ function paragraphStyleToCss(paraState: ParagraphBlock['paraState']): CssStyleOb
   if (marginRight) style['margin-right'] = `${marginRight}px`;
   if (textIndent) style['text-indent'] = `${textIndent}px`;
   if (paraState.lineSpacing) {
-    const lineHeight = Math.abs(paraState.lineSpacing) / 240;
-    if (lineHeight) style['line-height'] = String(Math.max(1, lineHeight));
+    if (paraState.lineSpacingRule === 'multiple' || paraState.lineSpacingMultiple) {
+      const lineHeight = Math.abs(paraState.lineSpacing) / 240;
+      if (lineHeight) style['line-height'] = String(Math.max(1, lineHeight));
+    } else {
+      const lineHeightPx = twipsToPx(paraState.lineSpacingTwips || Math.abs(paraState.lineSpacing));
+      if (lineHeightPx) style['line-height'] = `${Math.max(1, lineHeightPx)}px`;
+    }
   }
   if (paraState.keepLines) style['break-inside'] = 'avoid';
   if (paraState.keepNext) style['break-after'] = 'avoid';
@@ -530,6 +535,11 @@ function renderParagraphBlock(block: ParagraphBlock, options: { inline?: boolean
     attrs.push(` data-section-index="${block.sectionIndex ?? 0}"`);
     attrs.push(` data-cp-start="${block.cpStart}"`);
     attrs.push(` data-cp-end="${block.cpEnd}"`);
+    if (block.paraState.keepNext) attrs.push(' data-keep-next="1"');
+    if (block.styleName) attrs.push(` data-style-name="${escapeHtml(block.styleName)}"`);
+    const headingLike = /标题|题|Title|Heading/i.test(block.styleName || '')
+      || (Boolean(normalizeRenderableText(block.text)) && normalizeRenderableText(block.text).length <= 40 && block.paraState.alignment === 1 && (block.markStyle?.bold || block.inlines.some((node) => node.type === 'text' && (node.style.bold || node.style.boldBi))));
+    if (headingLike) attrs.push(' data-heading-like="1"');
     if (block.paraState.pageBreakBefore) attrs.push(' data-page-break-before="1"');
   }
   return `<${tag} class="${classNames.join(' ')}"${style ? ` style="${style}"` : ''}${attrs.join('')}>${empty}</${tag}>`;

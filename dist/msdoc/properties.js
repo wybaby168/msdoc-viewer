@@ -129,6 +129,9 @@ export function paraPropsToState(properties) {
         spacingBefore: 0,
         spacingAfter: 0,
         lineSpacing: 0,
+        lineSpacingMultiple: undefined,
+        lineSpacingRule: undefined,
+        lineSpacingTwips: undefined,
         leftIndent: 0,
         rightIndent: 0,
         firstLineIndent: 0,
@@ -169,9 +172,21 @@ export function paraPropsToState(properties) {
             case 'spacingAfter':
                 state.spacingAfter = prop.value || 0;
                 break;
-            case 'lineSpacing':
-                state.lineSpacing = prop.value || 0;
+            case 'lineSpacing': {
+                const value = prop.value;
+                if (typeof value === 'object' && value) {
+                    state.lineSpacing = Number(value.dyaLine) || 0;
+                    state.lineSpacingMultiple = Boolean(value.fMultLinespace);
+                    state.lineSpacingRule = value.rule || (value.fMultLinespace ? 'multiple' : 'atLeast');
+                    state.lineSpacingTwips = Number(value.lineSpacingTwips) || undefined;
+                }
+                else {
+                    state.lineSpacing = Number(value) || 0;
+                    state.lineSpacingRule = state.lineSpacing ? 'multiple' : undefined;
+                    state.lineSpacingMultiple = Boolean(state.lineSpacing);
+                }
                 break;
+            }
             case 'leftIndent':
                 state.leftIndent = prop.value || 0;
                 break;
