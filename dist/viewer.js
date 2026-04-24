@@ -52,10 +52,10 @@ function runtimeViewerCss() {
 .msdoc-page-overlay-item-page-number .msdoc-page-number{display:inline-block;min-width:1.5em;text-align:right}
 .msdoc-page-guides{position:absolute;inset:0;z-index:1;pointer-events:none}
 .msdoc-page-guide-corner{position:absolute;width:18px;height:18px}
-.msdoc-page-guide-corner-top-left{border-top:1px solid rgba(59,130,246,.42);border-left:1px solid rgba(59,130,246,.42);transform:translate(-1px,-1px)}
-.msdoc-page-guide-corner-top-right{border-top:1px solid rgba(59,130,246,.42);border-right:1px solid rgba(59,130,246,.42);transform:translate(-17px,-1px)}
-.msdoc-page-guide-corner-bottom-left{border-bottom:1px solid rgba(59,130,246,.42);border-left:1px solid rgba(59,130,246,.42);transform:translate(-1px,-17px)}
-.msdoc-page-guide-corner-bottom-right{border-bottom:1px solid rgba(59,130,246,.42);border-right:1px solid rgba(59,130,246,.42);transform:translate(-17px,-17px)}
+.msdoc-page-guide-corner-top-left{border-right:1px solid rgba(59,130,246,.42);border-bottom:1px solid rgba(59,130,246,.42)}
+.msdoc-page-guide-corner-top-right{border-left:1px solid rgba(59,130,246,.42);border-bottom:1px solid rgba(59,130,246,.42)}
+.msdoc-page-guide-corner-bottom-left{border-right:1px solid rgba(59,130,246,.42);border-top:1px solid rgba(59,130,246,.42)}
+.msdoc-page-guide-corner-bottom-right{border-left:1px solid rgba(59,130,246,.42);border-top:1px solid rgba(59,130,246,.42)}
 .msdoc-page-measure{position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;overflow:hidden}
 .msdoc-page-measure .msdoc-page-label,.msdoc-page-measure .msdoc-page-overlay,.msdoc-page-measure .msdoc-page-guides,.msdoc-page-measure .msdoc-page-header-band,.msdoc-page-measure .msdoc-page-footer-band{display:none}
 .msdoc-page-blank{background:linear-gradient(180deg,#fff,#fafafa)}
@@ -121,6 +121,8 @@ function getSections(parsed) {
                 breakCode: 2,
                 restartPageNumber: false,
                 pageNumberStart: 1,
+                documentGridLinePitchTwips: undefined,
+                documentGridMode: undefined,
             },
         }];
 }
@@ -288,6 +290,16 @@ function requiresInsertedBlankPage(nextSection, nextPhysicalPageNumber) {
         return nextPhysicalPageNumber % 2 === 0;
     return false;
 }
+function shouldKeepBlockWithNext(previous, next) {
+    if (!previous || !next.classList.contains('msdoc-table'))
+        return false;
+    if (previous.dataset.keepNext === '1')
+        return true;
+    // Word commonly keeps short heading/title paragraphs with the table that immediately follows.
+    // This mirrors the same pagination intent when older producers omit sprmPFKeepFollow
+    // but save the heading as a title/heading style before a table.
+    return previous.dataset.headingLike === '1';
+}
 function buildPages(root, rendered) {
     const sections = getSections(rendered.parsed);
     const body = root.querySelector('.msdoc-flow-view .msdoc-body');
@@ -337,9 +349,21 @@ function buildPages(root, rendered) {
         const metrics = sectionPageMetrics(currentSection);
         if (measure.body.scrollHeight > metrics.bodyHeightPx + 1 && currentBlocks.length) {
             measure.body.removeChild(clone);
-            finalize();
-            resetMeasure();
-            measure.body.appendChild(clone);
+            const previousBlock = currentBlocks[currentBlocks.length - 1];
+            if (shouldKeepBlockWithNext(previousBlock, block) && currentBlocks.length > 1) {
+                measure.body.lastElementChild?.remove();
+                const carriedBlock = currentBlocks.pop();
+                finalize();
+                resetMeasure();
+                measure.body.appendChild(carriedBlock.cloneNode(true));
+                measure.body.appendChild(clone);
+                currentBlocks.push(carriedBlock);
+            }
+            else {
+                finalize();
+                resetMeasure();
+                measure.body.appendChild(clone);
+            }
         }
         currentBlocks.push(block);
         if (clone.querySelector('.msdoc-page-break')) {
@@ -630,9 +654,9 @@ function renderPagedView(root, rendered) {
         pageEl.appendChild(label);
         const guides = document.createElement('div');
         guides.className = 'msdoc-page-guides';
-        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-top-left', metrics.marginLeftPx, metrics.marginTopPx));
-        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-top-right', metrics.widthPx - metrics.marginRightPx, metrics.marginTopPx));
-        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-bottom-left', metrics.marginLeftPx, metrics.heightPx - metrics.marginBottomPx));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-top-left', metrics.marginLeftPx - 18, metrics.marginTopPx - 18));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-top-right', metrics.widthPx - metrics.marginRightPx, metrics.marginTopPx - 18));
+        guides.appendChild(createCornerGuide('msdoc-page-guide-corner-bottom-left', metrics.marginLeftPx - 18, metrics.heightPx - metrics.marginBottomPx));
         guides.appendChild(createCornerGuide('msdoc-page-guide-corner-bottom-right', metrics.widthPx - metrics.marginRightPx, metrics.heightPx - metrics.marginBottomPx));
         pageEl.appendChild(guides);
         const headerBand = document.createElement('div');

@@ -18,6 +18,8 @@ const SectionSprmCodes = {
     sprmSDyaBottom: 0x9024,
     sprmSDzaGutter: 0xB025,
     sprmSPgnStart97: 0x501C,
+    sprmSDyaLinePitch: 0x9031,
+    sprmSClm: 0x5032,
     sprmSPgnStart: 0x7044,
 };
 const DEFAULT_PAGE_SETTINGS = {
@@ -38,6 +40,8 @@ const DEFAULT_PAGE_SETTINGS = {
     breakCode: 2,
     restartPageNumber: false,
     pageNumberStart: undefined,
+    documentGridLinePitchTwips: undefined,
+    documentGridMode: undefined,
 };
 function u16(bytes, offset = 0) {
     if (offset + 2 > bytes.length)
@@ -77,6 +81,8 @@ function decodeSectionSprm(sprm, operandBytes) {
         case SectionSprmCodes.sprmSDyaBottom: return setMeta('marginBottomTwips', i16(operandBytes, 0), sprm, operandBytes);
         case SectionSprmCodes.sprmSDzaGutter: return setMeta('gutterTwips', u16(operandBytes, 0), sprm, operandBytes);
         case SectionSprmCodes.sprmSPgnStart97: return setMeta('pageNumberStart', u16(operandBytes, 0), sprm, operandBytes);
+        case SectionSprmCodes.sprmSDyaLinePitch: return setMeta('documentGridLinePitchTwips', Math.max(1, i16(operandBytes, 0)), sprm, operandBytes);
+        case SectionSprmCodes.sprmSClm: return setMeta('documentGridMode', u16(operandBytes, 0), sprm, operandBytes);
         case SectionSprmCodes.sprmSPgnStart: return setMeta('pageNumberStart', u32(operandBytes, 0), sprm, operandBytes);
         default:
             return { kind: 'section', name: `sprm_${sprm.toString(16)}`, value: operandBytes, raw: sprm, operandBytes };
@@ -159,6 +165,12 @@ export function sectionPropsToPageSettings(properties) {
                 break;
             case 'pageNumberStart':
                 page.pageNumberStart = Number(property.value) || undefined;
+                break;
+            case 'documentGridLinePitchTwips':
+                page.documentGridLinePitchTwips = Math.max(1, Number(property.value) || 0) || undefined;
+                break;
+            case 'documentGridMode':
+                page.documentGridMode = Math.max(0, Number(property.value) || 0);
                 break;
             default:
                 break;

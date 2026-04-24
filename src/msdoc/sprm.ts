@@ -210,6 +210,20 @@ function u32(bytes: Uint8Array, offset = 0): number {
     | (((bytes[offset + 3] ?? 0) << 24) >>> 0)) >>> 0;
 }
 
+
+function parseLspd(bytes: Uint8Array): { dyaLine: number; fMultLinespace: 0 | 1; rule: 'single' | 'multiple' | 'atLeast' | 'exact'; lineSpacingTwips?: number } {
+  const dyaLine = i16(bytes, 0);
+  const fMultLinespace = (u16(bytes, 2) ? 1 : 0) as 0 | 1;
+  if (!dyaLine) return { dyaLine, fMultLinespace, rule: 'single' };
+  if (fMultLinespace === 1 && dyaLine > 0) {
+    return { dyaLine, fMultLinespace, rule: 'multiple' };
+  }
+  if (dyaLine < 0) {
+    return { dyaLine, fMultLinespace, rule: 'exact', lineSpacingTwips: Math.abs(dyaLine) };
+  }
+  return { dyaLine, fMultLinespace, rule: 'atLeast', lineSpacingTwips: dyaLine };
+}
+
 function parseItcFirstLim(bytes: Uint8Array, offset = 0): ItcRange {
   return {
     first: bytes[offset] ?? 0,
@@ -450,7 +464,7 @@ export function decodeSprm(sprm: number, operandBytes: Uint8Array): DecodedPrope
     case SprmCodes.sprmPDxaLeft: return setMeta('para', 'leftIndent', i16(bytes, 0), raw, bytes);
     case SprmCodes.sprmPDxaLeft180:
     case SprmCodes.sprmPDxaLeft1: return setMeta('para', 'firstLineIndent', i16(bytes, 0), raw, bytes);
-    case SprmCodes.sprmPDyaLine: return setMeta('para', 'lineSpacing', i16(bytes, 0), raw, bytes);
+    case SprmCodes.sprmPDyaLine: return setMeta('para', 'lineSpacing', parseLspd(bytes), raw, bytes);
     case SprmCodes.sprmPDyaBefore: return setMeta('para', 'spacingBefore', i16(bytes, 0), raw, bytes);
     case SprmCodes.sprmPDyaAfter: return setMeta('para', 'spacingAfter', i16(bytes, 0), raw, bytes);
     case SprmCodes.sprmPFInTable: return setMeta('para', 'inTable', boolValue(bytes), raw, bytes);
