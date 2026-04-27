@@ -653,6 +653,20 @@ function buildRangesForCpInterval(
   }));
 }
 
+function resolveListLabelExplicitStyle(
+  listCharProps: DecodedProperty[],
+  styles: StyleCollection,
+  fonts: FontsCollection,
+): CharState | undefined {
+  if (!listCharProps.length) return undefined;
+  const directState = charPropsToState(listCharProps);
+  const charStyleProps = directState.charStyleId != null ? styles.resolveStyle(directState.charStyleId).charProps : [];
+  const finalState = charPropsToState(mergePropertyArrays(charStyleProps, listCharProps));
+  const font = fonts.byIndex(finalState.fontFamilyId);
+  if (font) finalState.fontFamily = font.name || font.altName || undefined;
+  return finalState;
+}
+
 function assignBookmarksToParagraphs(paragraphs: ParagraphModel[], bookmarks: BookmarkInfo[]): void {
   if (!bookmarks.length || !paragraphs.length) return;
   for (const paragraph of paragraphs) {
@@ -703,7 +717,11 @@ function buildParagraphModelsForInterval(
     model.sectionIndex = resolveSectionIndex(range.cpStart);
     return model;
   });
-  if (lists) applyListFormatting(models, lists);
+  if (lists) {
+    applyListFormatting(models, lists, {
+      resolveLabelStyle: (listCharProps) => resolveListLabelExplicitStyle(listCharProps, styles, fonts),
+    });
+  }
   assignBookmarksToParagraphs(models, bookmarks);
   return models;
 }

@@ -239,7 +239,7 @@ function renderLevelTemplate(template, levelIndex, counters, currentLevel) {
  * PlfLst/PlfLfo model. This intentionally computes display labels in the AST so
  * renderers do not need to emulate Word's numbering counters themselves.
  */
-export function applyListFormatting(paragraphs, lists) {
+export function applyListFormatting(paragraphs, lists, options = {}) {
     const countersByOverride = new Map();
     for (const paragraph of paragraphs) {
         const overrideIndex = paragraph.paraState.listId || 0;
@@ -278,6 +278,7 @@ export function applyListFormatting(paragraphs, lists) {
             format: effectiveLevel.numberFormat,
             template: effectiveLevel.template,
             follow: effectiveLevel.follow,
+            style: options.resolveLabelStyle?.(effectiveLevel.charProps, paragraph, effectiveLevel),
         };
     }
 }

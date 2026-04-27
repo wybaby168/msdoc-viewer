@@ -324,3 +324,7 @@ MIT
 - `npm ci`
 - `npm run typecheck`
 - `npm run smoke`
+
+### 0.5.1 list label rendering fix
+
+Generated list labels now merge the paragraph text style with the LVL character properties from the MS-DOC list definition. This keeps heading numbers and chapter prefixes visually consistent with large heading text while still honoring explicit list/bullet glyph formatting.

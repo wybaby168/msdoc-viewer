@@ -9,6 +9,8 @@ import type {
   ListOverrideLevel,
   ParagraphModel,
   FibRgFcLcb,
+  CharState,
+  DecodedProperty,
 } from '../types.js';
 
 function readBytes(tableBytes: Uint8Array, fc: number | undefined, lcb: number | undefined): Uint8Array {
@@ -217,6 +219,15 @@ export function parseLists(tableBytes: Uint8Array, fib: FibRgFcLcb): ListCollect
   };
 }
 
+export interface ApplyListFormattingOptions {
+  /**
+   * Resolves LVL character properties into a renderable style for the generated
+   * list label. The caller owns font/style inheritance because that context
+   * lives in the parser, not in the raw list table reader.
+   */
+  resolveLabelStyle?: (charProps: DecodedProperty[], paragraph: ParagraphModel, level: ListLevelDefinition) => CharState | undefined;
+}
+
 function findOverride(lists: ListCollectionSummary, overrideIndex: number): ListOverride | undefined {
   if (!overrideIndex) return undefined;
   return lists.overrides.find((item) => item.index === overrideIndex) || lists.overrides[overrideIndex - 1];
@@ -259,7 +270,7 @@ function renderLevelTemplate(template: string, levelIndex: number, counters: num
  * PlfLst/PlfLfo model. This intentionally computes display labels in the AST so
  * renderers do not need to emulate Word's numbering counters themselves.
  */
-export function applyListFormatting(paragraphs: ParagraphModel[], lists: ListCollectionSummary): void {
+export function applyListFormatting(paragraphs: ParagraphModel[], lists: ListCollectionSummary, options: ApplyListFormattingOptions = {}): void {
   const countersByOverride = new Map<number, number[]>();
 
   for (const paragraph of paragraphs) {
@@ -298,6 +309,7 @@ export function applyListFormatting(paragraphs: ParagraphModel[], lists: ListCol
       format: effectiveLevel.numberFormat,
       template: effectiveLevel.template,
       follow: effectiveLevel.follow,
+      style: options.resolveLabelStyle?.(effectiveLevel.charProps, paragraph, effectiveLevel),
     } satisfies ListNumberingInfo;
   }
 }

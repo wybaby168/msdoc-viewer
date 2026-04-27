@@ -291,6 +291,12 @@ export interface ListNumberingInfo {
   format: number;
   template: string;
   follow: 'tab' | 'space' | 'none';
+  /** Character formatting that belongs to the numbering symbol itself.
+   *
+   * MS-DOC stores number/bullet glyph CHPX inside LVL. Renderers should merge
+   * it over the paragraph text style so generated labels match Word headings.
+   */
+  style?: CharState;
 }
 
 export interface BookmarkInfo {

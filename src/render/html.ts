@@ -523,12 +523,33 @@ function renderBookmarkAnchors(block: ParagraphBlock): string {
     .join('');
 }
 
+function firstRenderableTextStyle(block: ParagraphBlock): CharState | undefined {
+  for (const node of block.inlines || []) {
+    if (node.type === 'text' && normalizeRenderableText(node.text)) return node.style;
+    if (node.type === 'field' && normalizeRenderableText(node.displayText)) return node.style;
+    if ((node.type === 'image' || node.type === 'attachment') && node.style) return node.style;
+  }
+  return block.markStyle;
+}
+
+function listLabelStyleToCss(block: ParagraphBlock): CssStyleObject {
+  const style: CssStyleObject = {};
+  const paragraphTextStyle = firstRenderableTextStyle(block);
+  if (paragraphTextStyle) Object.assign(style, inlineStyleToCss(paragraphTextStyle));
+  // LVL.grpprlChpx belongs to the generated number/bullet itself. Merge it
+  // over the paragraph text style so headings such as "第1章" keep the same
+  // size/boldness as the visible title while bullets can still use their own font.
+  if (block.list?.style) Object.assign(style, inlineStyleToCss(block.list.style));
+  return style;
+}
+
 function renderListLabel(block: ParagraphBlock): string {
   if (!block.list) return '';
   const label = block.list.label || '';
   const level = Math.max(0, block.list.level || 0);
   const gap = block.list.follow === 'space' ? '&nbsp;' : block.list.follow === 'none' ? '' : '&nbsp;&nbsp;';
-  return `<span class="msdoc-list-label msdoc-list-label-level-${level}" aria-hidden="true">${escapeHtml(label)}${gap}</span>`;
+  const style = styleObjectToCss(listLabelStyleToCss(block));
+  return `<span class="msdoc-list-label msdoc-list-label-level-${level}" aria-hidden="true"${style ? ` style="${style}"` : ''}>${escapeHtml(label)}${gap}</span>`;
 }
 
 function renderInlineNodes(nodes: InlineNode[]): string {
